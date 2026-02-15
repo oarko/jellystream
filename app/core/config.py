@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     # Jellyfin
     JELLYFIN_URL: str = ""
     JELLYFIN_API_KEY: str = ""
+    JELLYFIN_USER_ID: str = ""  # User ID for API requests (can be auto-detected)
     JELLYFIN_CLIENT_NAME: str = "JellyStream"
     JELLYFIN_DEVICE_NAME: str = "JellyStream Server"
     JELLYFIN_DEVICE_ID: str = ""  # Auto-generated if not provided

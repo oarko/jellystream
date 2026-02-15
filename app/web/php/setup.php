@@ -17,6 +17,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'DATABASE_URL' => $_POST['database_url'] ?? 'sqlite:///./data/database/jellystream.db',
         'JELLYFIN_URL' => $_POST['jellyfin_url'] ?? '',
         'JELLYFIN_API_KEY' => $_POST['jellyfin_api_key'] ?? '',
+        'JELLYFIN_USER_ID' => $_POST['jellyfin_user_id'] ?? '',
         'JELLYFIN_CLIENT_NAME' => $_POST['jellyfin_client_name'] ?? 'JellyStream',
         'JELLYFIN_DEVICE_NAME' => $_POST['jellyfin_device_name'] ?? 'JellyStream Server',
         'LOG_LEVEL' => $_POST['log_level'] ?? 'INFO',
@@ -188,6 +189,14 @@ $current_config = $db->getEnvConfig();
                     <input type="text" id="jellyfin_api_key" name="jellyfin_api_key"
                            placeholder="Your API key"
                            value="<?php echo htmlspecialchars($current_config['JELLYFIN_API_KEY'] ?? ''); ?>">
+                </div>
+
+                <div class="form-group">
+                    <label for="jellyfin_user_id">Jellyfin User ID (Optional)</label>
+                    <input type="text" id="jellyfin_user_id" name="jellyfin_user_id"
+                           placeholder="Auto-detected if left empty"
+                           value="<?php echo htmlspecialchars($current_config['JELLYFIN_USER_ID'] ?? ''); ?>">
+                    <small style="color: #888;">Get your user ID from <a href="/api/jellyfin/users" target="_blank" style="color: #00A4DC;">/api/jellyfin/users</a> (after saving URL and API key)</small>
                 </div>
 
                 <div class="form-group">

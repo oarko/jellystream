@@ -16,8 +16,10 @@ $libraries = $libraries_response['success'] && isset($libraries_response['data']
 
 // Create library lookup map
 $library_map = [];
-foreach ($libraries as $library) {
-    $library_map[$library['Id']] = $library['Name'];
+if(!empty($libraries)) {
+    foreach ($libraries as $library) {
+            $library_map[$library['Id']] = $library['Name'];
+    }
 }
 ?>
 <!DOCTYPE html>

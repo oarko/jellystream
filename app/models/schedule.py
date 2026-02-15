@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text
+from sqlalchemy.sql import func
 
 from app.core.database import Base
 
@@ -17,5 +18,5 @@ class Schedule(Base):
     media_item_id = Column(String(255), nullable=False)
     scheduled_time = Column(DateTime, nullable=False)
     duration = Column(Integer, nullable=False)  # Duration in seconds
-    metadata = Column(Text, nullable=True)  # JSON metadata
-    created_at = Column(DateTime, default=datetime.utcnow)
+    extra_metadata = Column(Text, nullable=True)  # JSON metadata
+    created_at = Column(DateTime, server_default=func.now())

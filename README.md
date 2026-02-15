@@ -18,7 +18,27 @@ A media streaming integration for Jellyfin that allows you to create custom stre
 - Python 3.11+
 - Jellyfin server with API access
 
-### Installation
+### Automated Installation (Recommended)
+
+The easiest way to get started, especially on Debian/Ubuntu systems:
+
+```bash
+./setup.sh
+```
+
+This script will:
+- ✅ Detect your OS and install required packages (python3-venv on Debian/Ubuntu)
+- ✅ Create a virtual environment
+- ✅ Install all dependencies
+- ✅ Set up configuration files
+- ✅ Optionally start the application
+
+After setup, run JellyStream with:
+```bash
+./start.sh
+```
+
+### Manual Installation
 
 1. Clone the repository:
 ```bash
@@ -26,21 +46,29 @@ git clone <repository-url>
 cd jellystream
 ```
 
-2. Install dependencies:
+2. Create virtual environment:
+```bash
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+3. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Configure environment:
+4. Configure environment:
 ```bash
 cp .env.example .env
 # Edit .env with your Jellyfin URL and API key
 ```
 
-4. Run the application:
+5. Run the application:
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+python run.py
 ```
+
+For detailed installation instructions and troubleshooting, see [INSTALL.md](INSTALL.md).
 
 ## Development
 

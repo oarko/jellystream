@@ -24,7 +24,7 @@ async def get_schedules(db: AsyncSession = Depends(get_db)):
             "media_item_id": s.media_item_id,
             "scheduled_time": s.scheduled_time,
             "duration": s.duration,
-            "metadata": s.metadata,
+            "metadata": s.extra_metadata,
             "created_at": s.created_at,
         }
         for s in schedules
@@ -47,6 +47,6 @@ async def get_schedule(schedule_id: int, db: AsyncSession = Depends(get_db)):
         "media_item_id": schedule.media_item_id,
         "scheduled_time": schedule.scheduled_time,
         "duration": schedule.duration,
-        "metadata": schedule.metadata,
+        "metadata": schedule.extra_metadata,
         "created_at": schedule.created_at,
     }

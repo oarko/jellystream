@@ -1,7 +1,8 @@
 """Stream model."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text
+from sqlalchemy.sql import func
 
 from app.core.database import Base
 
@@ -17,5 +18,5 @@ class Stream(Base):
     jellyfin_library_id = Column(String(255), nullable=False)
     stream_url = Column(String(512), nullable=True)
     enabled = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

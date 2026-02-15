@@ -11,7 +11,7 @@
 ### 1. Clone the Repository
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/oarko/jellystream.git
 cd jellystream
 ```
 

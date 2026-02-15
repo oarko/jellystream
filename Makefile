@@ -1,4 +1,8 @@
-.PHONY: install run test clean docker-build docker-run
+.PHONY: setup install run test clean docker-build docker-run
+
+setup:
+	@chmod +x setup.sh
+	@./setup.sh
 
 install:
 	pip install -r requirements.txt

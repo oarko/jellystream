@@ -112,6 +112,19 @@ check_system_requirements() {
                 sudo apt install -y python3-dev
             fi
         fi
+
+        # Ask about Lighttpd installation for production
+        print_info "Lighttpd is recommended for production deployments"
+        print_info "It provides better performance than PHP's built-in server"
+        read -p "Install Lighttpd + PHP-CGI for production use? (y/N): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            print_info "Installing Lighttpd and PHP packages..."
+            sudo apt install -y lighttpd php-cgi php-sqlite3 php-curl php-json
+            print_success "Lighttpd installed! Use './start-lighttpd.sh' to start it"
+        else
+            print_info "Skipping Lighttpd installation (you can use './start-php.sh' for development)"
+        fi
     fi
 }
 
@@ -205,10 +218,11 @@ main() {
     echo "  1. Edit .env file with your Jellyfin settings"
     echo "  2. Activate the virtual environment:"
     echo "     ${YELLOW}source venv/bin/activate${NC}"
-    echo "  3. Run the application:"
+    echo "  3. Start the backend:"
     echo "     ${YELLOW}python run.py${NC}"
-    echo "     or"
-    echo "     ${YELLOW}make run${NC}"
+    echo "  4. Start the frontend (choose one):"
+    echo "     ${YELLOW}./start-php.sh${NC}      (Development - PHP built-in server)"
+    echo "     ${YELLOW}./start-lighttpd.sh${NC} (Production - Lighttpd server)"
     echo ""
 
     # Ask if user wants to run the app now

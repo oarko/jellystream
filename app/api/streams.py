@@ -72,6 +72,37 @@ async def create_stream(
     return {"id": stream.id, "message": "Stream created successfully"}
 
 
+@router.put("/{stream_id}")
+async def update_stream(
+    stream_id: int,
+    name: str = None,
+    jellyfin_library_id: str = None,
+    description: str = None,
+    enabled: bool = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """Update a stream."""
+    result = await db.execute(select(Stream).where(Stream.id == stream_id))
+    stream = result.scalar_one_or_none()
+
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream not found")
+
+    if name is not None:
+        stream.name = name
+    if jellyfin_library_id is not None:
+        stream.jellyfin_library_id = jellyfin_library_id
+    if description is not None:
+        stream.description = description
+    if enabled is not None:
+        stream.enabled = enabled
+
+    await db.commit()
+    await db.refresh(stream)
+
+    return {"id": stream.id, "message": "Stream updated successfully"}
+
+
 @router.delete("/{stream_id}")
 async def delete_stream(stream_id: int, db: AsyncSession = Depends(get_db)):
     """Delete a stream."""

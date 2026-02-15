@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  jellystream:
+    build: .
+    container_name: jellystream
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    environment:
+      - DATABASE_URL=sqlite:///./data/database/jellystream.db
+      - JELLYFIN_URL=${JELLYFIN_URL}
+      - JELLYFIN_API_KEY=${JELLYFIN_API_KEY}
+    env_file:
+      - .env
+    restart: unless-stopped

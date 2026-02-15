@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     # Scheduler
     SCHEDULER_ENABLED: bool = True
 
+    # Logging
+    LOG_LEVEL: str = "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+    LOG_TO_FILE: bool = True
+    LOG_FILE_PATH: str = "./logs"
+    LOG_FILE_MAX_BYTES: int = 10485760  # 10MB
+    LOG_FILE_BACKUP_COUNT: int = 5
+    LOG_RETENTION_DAYS: int = 30  # Delete logs older than this
+
     class Config:
         env_file = ".env"
         case_sensitive = True

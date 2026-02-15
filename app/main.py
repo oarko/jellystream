@@ -1,5 +1,6 @@
 """Main application entry point."""
 
+import logging
 from fastapi import FastAPI, Request, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,6 +10,11 @@ from fastapi.responses import HTMLResponse
 from app.api import router as api_router
 from app.core.config import settings
 from app.core.database import init_db
+from app.core.logging_config import setup_logging, get_logger
+
+# Initialize logging
+setup_logging()
+logger = get_logger(__name__)
 
 app = FastAPI(
     title="JellyStream",
@@ -38,7 +44,14 @@ app.include_router(api_router, prefix="/api")
 @app.on_event("startup")
 async def startup_event():
     """Initialize application on startup."""
+    logger.info("Starting JellyStream application...")
+    logger.info(f"Log level: {settings.LOG_LEVEL}")
+    logger.info(f"Debug mode: {settings.DEBUG}")
+
     await init_db()
+    logger.info("Database initialized successfully")
+
+    logger.info(f"JellyStream started on {settings.HOST}:{settings.PORT}")
 
 
 @app.get("/", response_class=HTMLResponse)

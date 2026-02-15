@@ -1,0 +1,35 @@
+FROM php:8.1-fpm-alpine
+
+# Install system dependencies
+RUN apk add --no-cache \
+    lighttpd \
+    php81-cgi \
+    php81-pdo \
+    php81-pdo_sqlite \
+    php81-sqlite3 \
+    php81-curl \
+    php81-json \
+    && rm -rf /var/cache/apk/*
+
+# Copy Lighttpd configuration
+COPY docker/lighttpd.conf /etc/lighttpd/lighttpd.conf
+
+# Create application directory
+WORKDIR /var/www/html
+
+# Copy PHP application
+COPY app/web/php/ /var/www/html/
+
+# Set permissions
+RUN chown -R lighttpd:lighttpd /var/www/html && \
+    chmod -R 755 /var/www/html
+
+# Create data directory with proper permissions
+RUN mkdir -p /app/data/database && \
+    chown -R lighttpd:lighttpd /app/data
+
+# Expose port
+EXPOSE 8080
+
+# Start Lighttpd
+CMD ["lighttpd", "-D", "-f", "/etc/lighttpd/lighttpd.conf"]

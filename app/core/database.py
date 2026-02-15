@@ -1,5 +1,7 @@
 """Database configuration and session management."""
 
+import os
+from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 
@@ -36,5 +38,11 @@ async def get_db() -> AsyncSession:
 
 async def init_db():
     """Initialize database tables."""
+    # Ensure database directory exists
+    db_path = settings.DATABASE_URL.replace("sqlite:///", "")
+    db_dir = os.path.dirname(db_path)
+    if db_dir:
+        Path(db_dir).mkdir(parents=True, exist_ok=True)
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

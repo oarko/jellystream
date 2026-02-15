@@ -10,6 +10,7 @@ pydantic-settings==2.6.1
 sqlalchemy==2.0.35
 aiosqlite==0.20.0
 alembic==1.13.3
+greenlet==3.1.1
 
 # Configuration
 pyyaml==6.0.2

@@ -17,7 +17,13 @@ async def get_libraries():
             detail="Jellyfin URL and API key must be configured"
         )
 
-    client = JellyfinClient(settings.JELLYFIN_URL, settings.JELLYFIN_API_KEY)
+    client = JellyfinClient(
+        base_url=settings.JELLYFIN_URL,
+        api_key=settings.JELLYFIN_API_KEY,
+        client_name=settings.JELLYFIN_CLIENT_NAME,
+        device_name=settings.JELLYFIN_DEVICE_NAME,
+        device_id=settings.JELLYFIN_DEVICE_ID or None
+    )
 
     try:
         libraries = await client.get_libraries()
@@ -35,7 +41,13 @@ async def get_library_items(library_id: str):
             detail="Jellyfin URL and API key must be configured"
         )
 
-    client = JellyfinClient(settings.JELLYFIN_URL, settings.JELLYFIN_API_KEY)
+    client = JellyfinClient(
+        base_url=settings.JELLYFIN_URL,
+        api_key=settings.JELLYFIN_API_KEY,
+        client_name=settings.JELLYFIN_CLIENT_NAME,
+        device_name=settings.JELLYFIN_DEVICE_NAME,
+        device_id=settings.JELLYFIN_DEVICE_ID or None
+    )
 
     try:
         items = await client.get_library_items(library_id)

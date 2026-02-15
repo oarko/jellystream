@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # Jellyfin
     JELLYFIN_URL: str = ""
     JELLYFIN_API_KEY: str = ""
+    JELLYFIN_CLIENT_NAME: str = "JellyStream"
+    JELLYFIN_DEVICE_NAME: str = "JellyStream Server"
+    JELLYFIN_DEVICE_ID: str = ""  # Auto-generated if not provided
 
     # Paths
     COMMERCIALS_PATH: str = "./data/commercials"

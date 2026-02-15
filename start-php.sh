@@ -61,6 +61,8 @@ if [ ${#MISSING_EXTENSIONS[@]} -gt 0 ]; then
 fi
 
 # Change to PHP directory
+echo -e "${GREEN}✓ All required PHP extensions are installed!${NC}"
+echo -e "${BLUE}Changing to PHP directory: $PHP_DIR${NC}"
 cd "$PHP_DIR"
 
 echo ""

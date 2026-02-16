@@ -26,7 +26,7 @@ if (file_exists($php_config_file)) {
  * Get the full API URL based on configured port
  */
 function getApiBaseUrl() {
-    return 'http://localhost:' . API_BACKEND_PORT . '/api';
+    return 'http://10.12.6.2:' . API_BACKEND_PORT . '/api';
 }
 
 /**

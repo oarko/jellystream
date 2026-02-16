@@ -391,7 +391,7 @@ $libraries = $libraries_response['success'] && isset($libraries_response['data']
                 const data = await response.json();
                 console.log('Jellyfin library items response:', data);
 
-                if (data.items && data.items.Items) {
+                if (data.Items) {
                     allMedia = data.items.Items;
                     console.log('Loaded media items:', allMedia);
                     renderMediaGrid(allMedia);

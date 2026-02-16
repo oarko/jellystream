@@ -389,6 +389,7 @@ $libraries = $libraries_response['success'] && isset($libraries_response['data']
             try {
                 const response = await fetch(`<?php echo API_BASE_URL; ?>/jellyfin/items/${libraryId}`);
                 const data = await response.json();
+                console.log('Jellyfin library items response:', data);
 
                 if (data.items && data.items.Items) {
                     allMedia = data.items.Items;

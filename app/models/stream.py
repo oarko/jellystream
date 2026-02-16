@@ -18,5 +18,11 @@ class Stream(Base):
     jellyfin_library_id = Column(String(255), nullable=False)
     stream_url = Column(String(512), nullable=True)
     enabled = Column(Boolean, default=True)
+
+    # Jellyfin Live TV Integration
+    tuner_host_id = Column(String(255), nullable=True)  # Jellyfin TunerHost ID
+    listing_provider_id = Column(String(255), nullable=True)  # Jellyfin ListingProvider ID
+    channel_number = Column(String(10), nullable=True)  # Virtual channel number (e.g., "100.1")
+
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

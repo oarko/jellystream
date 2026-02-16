@@ -158,3 +158,108 @@ class JellyfinClient:
     async def get_stream_url(self, item_id: str) -> str:
         """Get streaming URL for an item."""
         return f"{self.base_url}/Videos/{item_id}/stream?api_key={self.api_key}"
+
+    # Live TV Integration Methods
+
+    async def register_tuner_host(
+        self,
+        url: str,
+        friendly_name: str,
+        tuner_type: str = "m3u",
+        source: str = "JellyStream",
+        enable_stream_looping: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Register a tuner host with Jellyfin Live TV.
+
+        Args:
+            url: M3U playlist URL
+            friendly_name: Display name for the tuner
+            tuner_type: Type of tuner (default: "m3u")
+            source: Source identifier
+            enable_stream_looping: Enable looping for virtual channels
+
+        Returns:
+            Tuner host response with Id
+        """
+        async with aiohttp.ClientSession() as session:
+            api_url = f"{self.base_url}/LiveTv/TunerHosts"
+            payload = {
+                "Url": url,
+                "Type": tuner_type,
+                "FriendlyName": friendly_name,
+                "Source": source,
+                "EnableStreamLooping": enable_stream_looping,
+                "AllowHWTranscoding": False,
+                "AllowStreamSharing": True,
+                "ImportFavoritesOnly": False
+            }
+
+            async with session.post(api_url, headers=self.headers, json=payload) as response:
+                response.raise_for_status()
+                return await response.json()
+
+    async def unregister_tuner_host(self, tuner_host_id: str) -> bool:
+        """
+        Unregister a tuner host from Jellyfin Live TV.
+
+        Args:
+            tuner_host_id: The tuner host ID to remove
+
+        Returns:
+            True if successful
+        """
+        async with aiohttp.ClientSession() as session:
+            url = f"{self.base_url}/LiveTv/TunerHosts"
+            params = {"id": tuner_host_id}
+
+            async with session.delete(url, headers=self.headers, params=params) as response:
+                response.raise_for_status()
+                return response.status == 204
+
+    async def register_listing_provider(
+        self,
+        listing_provider_type: str,
+        xmltv_url: str,
+        friendly_name: str
+    ) -> Dict[str, Any]:
+        """
+        Register an XMLTV listing provider with Jellyfin.
+
+        Args:
+            listing_provider_type: Type (usually "xmltv")
+            xmltv_url: URL to XMLTV EPG data
+            friendly_name: Display name
+
+        Returns:
+            Listing provider response with Id
+        """
+        async with aiohttp.ClientSession() as session:
+            url = f"{self.base_url}/LiveTv/ListingProviders"
+            payload = {
+                "Type": listing_provider_type,
+                "Path": xmltv_url,
+                "ListingsId": friendly_name
+            }
+
+            async with session.post(url, headers=self.headers, json=payload) as response:
+                response.raise_for_status()
+                return await response.json()
+
+    async def unregister_listing_provider(self, provider_id: str) -> bool:
+        """
+        Unregister a listing provider from Jellyfin.
+
+        Args:
+            provider_id: The listing provider ID to remove
+
+        Returns:
+            True if successful
+        """
+        async with aiohttp.ClientSession() as session:
+            url = f"{self.base_url}/LiveTv/ListingProviders"
+            params = {"id": provider_id}
+
+            async with session.delete(url, headers=self.headers, params=params) as response:
+                response.raise_for_status()
+                return response.status == 204

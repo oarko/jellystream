@@ -392,6 +392,7 @@ $libraries = $libraries_response['success'] && isset($libraries_response['data']
 
                 if (data.items && data.items.Items) {
                     allMedia = data.items.Items;
+                    console.log('Loaded media items:', allMedia);
                     renderMediaGrid(allMedia);
                 } else {
                     document.getElementById('mediaGrid').innerHTML = '<div class="loading">No items found</div>';

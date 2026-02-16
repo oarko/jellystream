@@ -58,14 +58,40 @@ async def get_libraries():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/items/{library_id}")
-async def get_library_items(library_id: str):
-    """Get items from a Jellyfin library."""
+@router.get("/items/{parent_id}")
+async def get_library_items(
+    parent_id: str,
+    recursive: bool = False,
+    limit: int = None,
+    start_index: int = 0,
+    sort_by: str = "SortName",
+    sort_order: str = "Ascending",
+    include_item_types: str = None
+):
+    """
+    Get items from a Jellyfin parent (library, series, season).
+
+    Args:
+        parent_id: Parent ID (library, series, or season)
+        recursive: If True, gets all descendants. If False, only direct children.
+        limit: Number of items to return (defaults to JELLYFIN_DEFAULT_PAGE_SIZE)
+        start_index: Starting index for pagination
+        sort_by: Field to sort by (SortName, PremiereDate, etc.)
+        sort_order: Ascending or Descending
+        include_item_types: Filter by type (e.g., "Series,Season,Episode")
+    """
     if not settings.JELLYFIN_URL or not settings.JELLYFIN_API_KEY:
         raise HTTPException(
             status_code=400,
             detail="Jellyfin URL and API key must be configured"
         )
+
+    # Use default page size if not specified
+    if limit is None:
+        limit = settings.JELLYFIN_DEFAULT_PAGE_SIZE
+
+    # Enforce max page size
+    limit = min(limit, settings.JELLYFIN_MAX_PAGE_SIZE)
 
     client = JellyfinClient(
         base_url=settings.JELLYFIN_URL,
@@ -77,7 +103,15 @@ async def get_library_items(library_id: str):
     )
 
     try:
-        items = await client.get_library_items(library_id)
-        return {"items": items}
+        items = await client.get_library_items(
+            parent_id=parent_id,
+            recursive=recursive,
+            limit=limit,
+            start_index=start_index,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            include_item_types=include_item_types
+        )
+        return items
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

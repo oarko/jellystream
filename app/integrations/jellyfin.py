@@ -102,22 +102,45 @@ class JellyfinClient:
 
     async def get_library_items(
         self,
-        library_id: str,
-        limit: int = 100
+        parent_id: str,
+        recursive: bool = False,
+        limit: int = 50,
+        start_index: int = 0,
+        sort_by: str = "SortName",
+        sort_order: str = "Ascending",
+        include_item_types: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Get items from a specific library.
-        Returns the full response including Items array.
+        Get items from a specific parent (library, series, season).
+
+        Args:
+            parent_id: Parent ID (library, series, or season)
+            recursive: If True, gets all descendants. If False, only direct children.
+            limit: Number of items to return (for pagination)
+            start_index: Starting index for pagination
+            sort_by: Field to sort by (SortName, PremiereDate, etc.)
+            sort_order: Ascending or Descending
+            include_item_types: Filter by type (e.g., "Series,Season,Episode")
+
+        Returns:
+            Full response with Items, TotalRecordCount, StartIndex
         """
         user_id = await self.ensure_user_id()
 
         async with aiohttp.ClientSession() as session:
             url = f"{self.base_url}/Users/{user_id}/Items"
             params = {
-                "ParentId": library_id,
+                "ParentId": parent_id,
+                "Recursive": str(recursive).lower(),
                 "Limit": limit,
-                "Recursive": True
+                "StartIndex": start_index,
+                "SortBy": sort_by,
+                "SortOrder": sort_order
             }
+
+            if include_item_types:
+                params["IncludeItemTypes"] = include_item_types
+
             async with session.get(url, headers=self.headers, params=params) as response:
                 response.raise_for_status()
                 return await response.json()

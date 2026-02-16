@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     JELLYFIN_CLIENT_NAME: str = "JellyStream"
     JELLYFIN_DEVICE_NAME: str = "JellyStream Server"
     JELLYFIN_DEVICE_ID: str = ""  # Auto-generated if not provided
+    JELLYFIN_DEFAULT_PAGE_SIZE: int = 50  # Default items per page
+    JELLYFIN_MAX_PAGE_SIZE: int = 1000  # Maximum items per page
 
     # Paths
     COMMERCIALS_PATH: str = "./data/commercials"

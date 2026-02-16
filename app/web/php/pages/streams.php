@@ -149,9 +149,11 @@ if(!empty($libraries)) {
                     <thead>
                         <tr>
                             <th>Name</th>
+                            <th>Channel #</th>
                             <th>Library</th>
                             <th>Description</th>
                             <th>Status</th>
+                            <th>Live TV</th>
                             <th>Created</th>
                             <th>Actions</th>
                         </tr>
@@ -160,6 +162,11 @@ if(!empty($libraries)) {
                         <?php foreach ($streams as $stream): ?>
                         <tr>
                             <td><strong><?php echo htmlspecialchars($stream['name']); ?></strong></td>
+                            <td>
+                                <span style="font-family: monospace; color: #00A4DC;">
+                                    <?php echo htmlspecialchars($stream['channel_number'] ?? '—'); ?>
+                                </span>
+                            </td>
                             <td>
                                 <?php
                                 $lib_id = $stream['jellyfin_library_id'];
@@ -171,6 +178,17 @@ if(!empty($libraries)) {
                                 <span class="status-badge status-<?php echo $stream['enabled'] ? 'enabled' : 'disabled'; ?>">
                                     <?php echo $stream['enabled'] ? '✓ Enabled' : '✗ Disabled'; ?>
                                 </span>
+                            </td>
+                            <td>
+                                <?php if (!empty($stream['tuner_host_id']) || !empty($stream['listing_provider_id'])): ?>
+                                    <span style="color: #28a745; font-size: 12px;">
+                                        📡 Registered
+                                    </span>
+                                <?php else: ?>
+                                    <span style="color: #888; font-size: 12px;">
+                                        Not registered
+                                    </span>
+                                <?php endif; ?>
                             </td>
                             <td><?php echo date('M j, Y', strtotime($stream['created_at'])); ?></td>
                             <td>

@@ -307,6 +307,24 @@ $libraries = $libraries_response['success'] && isset($libraries_response['data']
                         </select>
                     </div>
 
+                    <div class="form-group">
+                        <label for="channel_number">Channel Number</label>
+                        <input type="text" id="channel_number" name="channel_number"
+                               value="<?php echo htmlspecialchars($stream['channel_number'] ?? ''); ?>"
+                               placeholder="e.g., 100.1">
+                        <small style="color: #888; font-size: 12px; display: block; margin-top: 5px;">
+                            Virtual channel number for Live TV (e.g., 100.1, 200.5)
+                        </small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" name="enabled" value="1"
+                                   <?php echo ($stream['enabled'] ?? true) ? 'checked' : ''; ?>>
+                            Enabled
+                        </label>
+                    </div>
+
                     <button type="submit" class="btn"><?php echo $is_edit ? 'Update' : 'Create'; ?> Stream</button>
                 </form>
             </div>
@@ -615,7 +633,9 @@ $libraries = $libraries_response['success'] && isset($libraries_response['data']
             const data = {
                 name: formData.get('name'),
                 description: formData.get('description'),
-                jellyfin_library_id: formData.get('jellyfin_library_id')
+                jellyfin_library_id: formData.get('jellyfin_library_id'),
+                channel_number: formData.get('channel_number') || null,
+                enabled: formData.get('enabled') === '1'
             };
 
             try {

@@ -114,12 +114,18 @@ class ApiClient {
     /**
      * Create new stream
      */
-    public function createStream($name, $jellyfin_library_id, $description = null) {
-        return $this->post('/streams/', [
+    public function createStream($name, $jellyfin_library_id, $description = null, $channel_number = null) {
+        $data = [
             'name' => $name,
             'jellyfin_library_id' => $jellyfin_library_id,
             'description' => $description
-        ]);
+        ];
+
+        if ($channel_number !== null) {
+            $data['channel_number'] = $channel_number;
+        }
+
+        return $this->post('/streams/', $data);
     }
 
     /**
@@ -146,8 +152,16 @@ class ApiClient {
     /**
      * Get items from Jellyfin library
      */
-    public function getJellyfinLibraryItems($library_id) {
-        return $this->get("/jellyfin/items/{$library_id}");
+    public function getJellyfinLibraryItems($parent_id, $params = []) {
+        // Support pagination, sorting, recursive, and filtering
+        return $this->get("/jellyfin/items/{$parent_id}", $params);
+    }
+
+    /**
+     * Get Jellyfin users
+     */
+    public function getJellyfinUsers() {
+        return $this->get('/jellyfin/users');
     }
 
     /**

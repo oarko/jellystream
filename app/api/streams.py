@@ -24,6 +24,9 @@ async def get_streams(db: AsyncSession = Depends(get_db)):
             "jellyfin_library_id": s.jellyfin_library_id,
             "stream_url": s.stream_url,
             "enabled": s.enabled,
+            "tuner_host_id": s.tuner_host_id,
+            "listing_provider_id": s.listing_provider_id,
+            "channel_number": s.channel_number,
             "created_at": s.created_at,
             "updated_at": s.updated_at,
         }
@@ -47,6 +50,9 @@ async def get_stream(stream_id: int, db: AsyncSession = Depends(get_db)):
         "jellyfin_library_id": stream.jellyfin_library_id,
         "stream_url": stream.stream_url,
         "enabled": stream.enabled,
+        "tuner_host_id": stream.tuner_host_id,
+        "listing_provider_id": stream.listing_provider_id,
+        "channel_number": stream.channel_number,
         "created_at": stream.created_at,
         "updated_at": stream.updated_at,
     }
@@ -57,6 +63,7 @@ async def create_stream(
     name: str,
     jellyfin_library_id: str,
     description: str = None,
+    channel_number: str = None,
     db: AsyncSession = Depends(get_db)
 ):
     """Create a new stream."""
@@ -64,6 +71,7 @@ async def create_stream(
         name=name,
         description=description,
         jellyfin_library_id=jellyfin_library_id,
+        channel_number=channel_number,
     )
     db.add(stream)
     await db.commit()
@@ -79,6 +87,9 @@ async def update_stream(
     jellyfin_library_id: str = None,
     description: str = None,
     enabled: bool = None,
+    channel_number: str = None,
+    tuner_host_id: str = None,
+    listing_provider_id: str = None,
     db: AsyncSession = Depends(get_db)
 ):
     """Update a stream."""
@@ -96,6 +107,12 @@ async def update_stream(
         stream.description = description
     if enabled is not None:
         stream.enabled = enabled
+    if channel_number is not None:
+        stream.channel_number = channel_number
+    if tuner_host_id is not None:
+        stream.tuner_host_id = tuner_host_id
+    if listing_provider_id is not None:
+        stream.listing_provider_id = listing_provider_id
 
     await db.commit()
     await db.refresh(stream)

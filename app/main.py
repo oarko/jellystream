@@ -51,7 +51,19 @@ async def startup_event():
     await init_db()
     logger.info("Database initialized successfully")
 
+    from app.services.scheduler import start_scheduler
+    start_scheduler()
+
     logger.info(f"JellyStream started on {settings.HOST}:{settings.PORT}")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Graceful shutdown."""
+    logger.info("Shutting down JellyStream...")
+    from app.services.scheduler import stop_scheduler
+    stop_scheduler()
+    logger.info("JellyStream shutdown complete")
 
 
 @app.get("/", response_class=HTMLResponse)

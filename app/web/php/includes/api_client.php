@@ -212,4 +212,70 @@ class ApiClient {
     public function deleteSchedule($id) {
         return $this->delete("/schedules/{$id}");
     }
+
+    // ── Channel methods (new architecture) ────────────────────────────────────
+
+    /**
+     * Get all channels
+     */
+    public function getChannels() {
+        return $this->get('/channels/');
+    }
+
+    /**
+     * Get a specific channel (includes libraries and genre_filters)
+     */
+    public function getChannel($id) {
+        return $this->get("/channels/{$id}");
+    }
+
+    /**
+     * Create a new channel.
+     *
+     * $data must match CreateChannelRequest:
+     *   name, description?, channel_number?, schedule_type?,
+     *   libraries: [{library_id, library_name, collection_type}],
+     *   genre_filters?: [{genre, content_type}]
+     */
+    public function createChannel($data) {
+        return $this->post('/channels/', $data);
+    }
+
+    /**
+     * Update an existing channel.
+     *
+     * $data matches UpdateChannelRequest (all fields optional).
+     */
+    public function updateChannel($id, $data) {
+        return $this->put("/channels/{$id}", $data);
+    }
+
+    /**
+     * Delete a channel (cascades to libraries, genre_filters, schedule_entries)
+     */
+    public function deleteChannel($id) {
+        return $this->delete("/channels/{$id}");
+    }
+
+    /**
+     * Get schedule entries for a channel within a time window.
+     * $params may include: hours_back, hours_forward
+     */
+    public function getChannelSchedule($channel_id, $params = []) {
+        return $this->get("/schedules/channel/{$channel_id}", $params);
+    }
+
+    /**
+     * Get what is currently playing on a channel.
+     */
+    public function getNowPlaying($channel_id) {
+        return $this->get("/schedules/channel/{$channel_id}/now");
+    }
+
+    /**
+     * Manually trigger schedule generation for a channel.
+     */
+    public function generateChannelSchedule($channel_id, $days = 7) {
+        return $this->post("/channels/{$channel_id}/generate-schedule?days={$days}");
+    }
 }

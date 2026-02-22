@@ -4,6 +4,10 @@ import aiohttp
 import uuid
 from typing import List, Dict, Any, Optional
 
+from app.core.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 class JellyfinClient:
     """Client for interacting with Jellyfin API."""
@@ -53,24 +57,38 @@ class JellyfinClient:
             "Content-Type": "application/json"
         }
 
+        logger.debug(
+            f"JellyfinClient init: base_url={self.base_url}, "
+            f"user_id={self.user_id}, client={self.client_name}"
+        )
+
     async def get_users(self) -> List[Dict[str, Any]]:
         """
         Get all users from Jellyfin.
         Useful for discovering user IDs.
         """
+        logger.debug("get_users called")
         async with aiohttp.ClientSession() as session:
             url = f"{self.base_url}/Users"
             async with session.get(url, headers=self.headers) as response:
                 response.raise_for_status()
-                return await response.json()
+                users = await response.json()
+                logger.info(f"get_users: returned {len(users)} users")
+                return users
 
     async def get_current_user(self) -> Optional[Dict[str, Any]]:
         """
         Get the first user (usually the admin/API key owner).
         Returns user info with Id field.
         """
+        logger.debug("get_current_user called")
         users = await self.get_users()
-        return users[0] if users else None
+        user = users[0] if users else None
+        if user:
+            logger.debug(f"get_current_user: using user '{user.get('Name')}' (id={user.get('Id')})")
+        else:
+            logger.warning("get_current_user: no users found on Jellyfin server")
+        return user
 
     async def ensure_user_id(self) -> str:
         """
@@ -78,9 +96,11 @@ class JellyfinClient:
         If not set, auto-detect from the first user.
         """
         if not self.user_id:
+            logger.debug("ensure_user_id: user_id not set, auto-detecting")
             user = await self.get_current_user()
             if user:
                 self.user_id = user['Id']
+                logger.info(f"ensure_user_id: auto-detected user_id={self.user_id}")
             else:
                 raise Exception("Could not auto-detect user ID and none was provided")
         return self.user_id
@@ -90,6 +110,7 @@ class JellyfinClient:
         Get all libraries (views) for the user.
         Uses /Users/{userId}/Views endpoint.
         """
+        logger.debug("get_libraries called")
         user_id = await self.ensure_user_id()
 
         async with aiohttp.ClientSession() as session:
@@ -97,8 +118,9 @@ class JellyfinClient:
             async with session.get(url, headers=self.headers) as response:
                 response.raise_for_status()
                 data = await response.json()
-                # Return the Items array which contains the libraries
-                return data.get("Items", [])
+                libraries = data.get("Items", [])
+                logger.info(f"get_libraries: returned {len(libraries)} libraries")
+                return libraries
 
     async def get_library_items(
         self,
@@ -108,7 +130,9 @@ class JellyfinClient:
         start_index: int = 0,
         sort_by: str = "SortName",
         sort_order: str = "Ascending",
-        include_item_types: Optional[str] = None
+        include_item_types: Optional[str] = None,
+        genres: Optional[List[str]] = None,
+        fields: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Get items from a specific parent (library, series, season).
@@ -121,43 +145,67 @@ class JellyfinClient:
             sort_by: Field to sort by (SortName, PremiereDate, etc.)
             sort_order: Ascending or Descending
             include_item_types: Filter by type (e.g., "Series,Season,Episode")
+            genres: Optional list of genre names to filter by
+            fields: Comma-separated additional fields to include in response
 
         Returns:
             Full response with Items, TotalRecordCount, StartIndex
         """
+        logger.debug(
+            f"get_library_items: parent_id={parent_id}, recursive={recursive}, "
+            f"limit={limit}, start_index={start_index}, genres={genres}"
+        )
         user_id = await self.ensure_user_id()
 
         async with aiohttp.ClientSession() as session:
             url = f"{self.base_url}/Users/{user_id}/Items"
-            params = {
+            params: Dict[str, Any] = {
                 "ParentId": parent_id,
                 "Recursive": str(recursive).lower(),
                 "Limit": limit,
                 "StartIndex": start_index,
                 "SortBy": sort_by,
-                "SortOrder": sort_order
+                "SortOrder": sort_order,
             }
 
             if include_item_types:
                 params["IncludeItemTypes"] = include_item_types
 
+            if genres:
+                params["Genres"] = ",".join(genres)
+
+            if fields:
+                params["Fields"] = fields
+
             async with session.get(url, headers=self.headers, params=params) as response:
                 response.raise_for_status()
-                return await response.json()
+                data = await response.json()
+                total = data.get("TotalRecordCount", 0)
+                items = data.get("Items", [])
+                logger.debug(
+                    f"get_library_items: parent={parent_id}, "
+                    f"returned {len(items)}/{total} items"
+                )
+                return data
 
     async def get_item_info(self, item_id: str) -> Dict[str, Any]:
         """Get information about a specific item."""
+        logger.debug(f"get_item_info: item_id={item_id}")
         user_id = await self.ensure_user_id()
 
         async with aiohttp.ClientSession() as session:
             url = f"{self.base_url}/Users/{user_id}/Items/{item_id}"
             async with session.get(url, headers=self.headers) as response:
                 response.raise_for_status()
-                return await response.json()
+                item = await response.json()
+                logger.debug(f"get_item_info: returned item '{item.get('Name')}' (id={item_id})")
+                return item
 
     async def get_stream_url(self, item_id: str) -> str:
         """Get streaming URL for an item."""
-        return f"{self.base_url}/Videos/{item_id}/stream?api_key={self.api_key}"
+        url = f"{self.base_url}/Videos/{item_id}/stream?api_key={self.api_key}"
+        logger.debug(f"get_stream_url: item_id={item_id}")
+        return url
 
     # Live TV Integration Methods
 
@@ -182,6 +230,7 @@ class JellyfinClient:
         Returns:
             Tuner host response with Id
         """
+        logger.debug(f"register_tuner_host: url={url}, friendly_name={friendly_name}")
         async with aiohttp.ClientSession() as session:
             api_url = f"{self.base_url}/LiveTv/TunerHosts"
             payload = {
@@ -197,7 +246,9 @@ class JellyfinClient:
 
             async with session.post(api_url, headers=self.headers, json=payload) as response:
                 response.raise_for_status()
-                return await response.json()
+                result = await response.json()
+                logger.info(f"register_tuner_host: registered tuner id={result.get('Id')}")
+                return result
 
     async def unregister_tuner_host(self, tuner_host_id: str) -> bool:
         """
@@ -209,13 +260,16 @@ class JellyfinClient:
         Returns:
             True if successful
         """
+        logger.debug(f"unregister_tuner_host: tuner_host_id={tuner_host_id}")
         async with aiohttp.ClientSession() as session:
             url = f"{self.base_url}/LiveTv/TunerHosts"
             params = {"id": tuner_host_id}
 
             async with session.delete(url, headers=self.headers, params=params) as response:
                 response.raise_for_status()
-                return response.status == 204
+                success = response.status == 204
+                logger.info(f"unregister_tuner_host: {tuner_host_id} removed={success}")
+                return success
 
     async def register_listing_provider(
         self,
@@ -234,6 +288,10 @@ class JellyfinClient:
         Returns:
             Listing provider response with Id
         """
+        logger.debug(
+            f"register_listing_provider: type={listing_provider_type}, "
+            f"xmltv_url={xmltv_url}"
+        )
         async with aiohttp.ClientSession() as session:
             url = f"{self.base_url}/LiveTv/ListingProviders"
             payload = {
@@ -244,7 +302,11 @@ class JellyfinClient:
 
             async with session.post(url, headers=self.headers, json=payload) as response:
                 response.raise_for_status()
-                return await response.json()
+                result = await response.json()
+                logger.info(
+                    f"register_listing_provider: registered provider id={result.get('Id')}"
+                )
+                return result
 
     async def unregister_listing_provider(self, provider_id: str) -> bool:
         """
@@ -256,10 +318,13 @@ class JellyfinClient:
         Returns:
             True if successful
         """
+        logger.debug(f"unregister_listing_provider: provider_id={provider_id}")
         async with aiohttp.ClientSession() as session:
             url = f"{self.base_url}/LiveTv/ListingProviders"
             params = {"id": provider_id}
 
             async with session.delete(url, headers=self.headers, params=params) as response:
                 response.raise_for_status()
-                return response.status == 204
+                success = response.status == 204
+                logger.info(f"unregister_listing_provider: {provider_id} removed={success}")
+                return success

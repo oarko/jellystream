@@ -16,27 +16,32 @@ if (file_exists($php_config_file)) {
     $config = parse_ini_file($php_config_file);
     define('PHP_FRONTEND_PORT', $config['PHP_FRONTEND_PORT'] ?? $DEFAULT_PHP_PORT);
     define('API_BACKEND_PORT', $config['API_BACKEND_PORT'] ?? $DEFAULT_API_PORT);
+    define('API_HOST', $config['API_HOST'] ?? 'localhost');
 } else {
     // Use defaults
     define('PHP_FRONTEND_PORT', $DEFAULT_PHP_PORT);
     define('API_BACKEND_PORT', $DEFAULT_API_PORT);
+    define('API_HOST', 'localhost');
 }
 
 /**
- * Get the full API URL based on configured port
+ * Get the full API URL based on configured port.
+ * Host resolved from: JELLYSTREAM_API_HOST env var → .phpconfig API_HOST → localhost
  */
 function getApiBaseUrl() {
-    return 'http://10.12.6.2:' . API_BACKEND_PORT . '/api';
+    $host = getenv('JELLYSTREAM_API_HOST') ?: API_HOST;
+    return 'http://' . $host . ':' . API_BACKEND_PORT . '/api';
 }
 
 /**
  * Save port configuration
  */
-function savePortConfig($php_port, $api_port) {
+function savePortConfig($php_port, $api_port, $api_host = 'localhost') {
     $php_config_file = __DIR__ . '/../.phpconfig';
     $config = [
         'PHP_FRONTEND_PORT' => $php_port,
-        'API_BACKEND_PORT' => $api_port
+        'API_BACKEND_PORT'  => $api_port,
+        'API_HOST'          => $api_host,
     ];
 
     $content = "; JellyStream PHP Configuration\n";

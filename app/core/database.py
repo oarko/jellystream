@@ -44,5 +44,14 @@ async def init_db():
     if db_dir:
         Path(db_dir).mkdir(parents=True, exist_ok=True)
 
+    # Import all models so SQLAlchemy registers them with Base.metadata
+    # before create_all is called. Order matters for FK references.
+    import app.models.stream          # legacy — kept for backward compat
+    import app.models.schedule        # legacy — kept for backward compat
+    import app.models.channel
+    import app.models.channel_library
+    import app.models.genre_filter
+    import app.models.schedule_entry
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

@@ -166,6 +166,10 @@ jellystream/
 
 Interactive Swagger docs are available at `http://localhost:8000/docs` when the server is running. See [docs/API.md](docs/API.md) for static documentation.
 
+## Discord Server
+
+https://discord.gg/YmhGFnrv
+
 ## License
 
 MIT License

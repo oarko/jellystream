@@ -76,14 +76,30 @@ Returns all available Jellyfin libraries.
 }
 ```
 
-### Get Library Items
+### Get Genres for a Library
 
-**GET** `/api/jellyfin/items/{library_id}`
+**GET** `/api/jellyfin/genres/{library_id}`
 
-Returns items from a specific library.
+Returns all genres present in a library. Used when configuring genre filters for a channel.
 
 **Parameters:**
-- `library_id`: The library ID from the libraries endpoint
+- `library_id`: The library ID (`ItemId`) from the libraries endpoint
+
+**Example Response:**
+```json
+{
+  "genres": ["Action", "Comedy", "Crime", "Drama", "Horror", "Sci-Fi", "Thriller"]
+}
+```
+
+### Get Library Items
+
+**GET** `/api/jellyfin/items/{parent_id}`
+
+Returns items from a library or parent item (series, season, etc.).
+
+**Parameters:**
+- `parent_id`: The ID of the parent item (library `ItemId`, series ID, or season ID)
 
 **Example Response:**
 ```json

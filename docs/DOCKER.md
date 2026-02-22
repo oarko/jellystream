@@ -36,7 +36,7 @@ Docker Compose Environment
 ├─ API Container (Port 8000)
 │  ├─ Python 3.11
 │  ├─ FastAPI
-│  └─ Uvicorn
+│  └─ run.py launcher
 │
 └─ Shared Volumes
    ├─ data/ (database, media)
@@ -101,18 +101,32 @@ Edit `.env`:
 
 ```env
 PHP_PORT=8080    # Frontend port
-API_PORT=8000    # Backend port
-PORT=8000        # Backend internal port
+PORT=8000        # Backend port
 ```
 
-See complete guide: [PORT_CONFIGURATION.md](../PORT_CONFIGURATION.md)
+### Required Settings
 
-### Complete Documentation
+```env
+# Jellyfin connection (required)
+JELLYFIN_URL=http://your-jellyfin-server:8096
+JELLYFIN_API_KEY=your_api_key_here
 
-See [docs/DOCKER.md](DOCKER.md) for:
-- Detailed setup instructions
-- Production deployment
-- Troubleshooting
-- Best practices
-- Development mode
-- Backup/restore procedures
+# Public URL Jellyfin uses to reach JellyStream (must NOT be localhost)
+JELLYSTREAM_PUBLIC_URL=http://192.168.1.100:8000
+```
+
+### Optional Settings
+
+```env
+# ISO 639-2 language code for preferred audio track (default: eng)
+PREFERRED_AUDIO_LANGUAGE=eng
+
+# Remap Jellyfin file paths to local paths (/jf/prefix:/local/prefix)
+MEDIA_PATH_MAP=
+
+# Scheduler (default: true)
+SCHEDULER_ENABLED=true
+
+# Logging
+LOG_LEVEL=INFO
+```

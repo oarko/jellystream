@@ -53,6 +53,7 @@ and optional genre filters that drive automatic schedule generation.
     "description": "Non-stop action",
     "channel_number": "100.1",
     "enabled": true,
+    "channel_type": "video",
     "schedule_type": "genre_auto",
     "schedule_generated_through": "2026-03-01T02:00:00",
     "created_at": "2026-02-01T00:00:00",
@@ -73,12 +74,13 @@ Returns channel with its libraries and genre filters.
   "name": "Action Movies",
   "channel_number": "100.1",
   "enabled": true,
+  "channel_type": "video",
   "schedule_type": "genre_auto",
   "libraries": [
     { "library_id": "abc123", "library_name": "Movies", "collection_type": "movies" }
   ],
   "genre_filters": [
-    { "genre": "Action", "content_type": "both" }
+    { "genre": "Action", "content_type": "both", "filter_type": "include" }
   ]
 }
 ```
@@ -92,19 +94,22 @@ Returns channel with its libraries and genre filters.
   "name": "Action Movies",
   "description": "Non-stop action",
   "channel_number": "100.1",
+  "channel_type": "video",
   "schedule_type": "genre_auto",
   "libraries": [
     { "library_id": "abc123", "library_name": "Movies", "collection_type": "movies" }
   ],
   "genre_filters": [
-    { "genre": "Action", "content_type": "both" },
-    { "genre": "Thriller", "content_type": "movie" }
+    { "genre": "Action", "content_type": "both", "filter_type": "include" },
+    { "genre": "Animation", "content_type": "both", "filter_type": "exclude" }
   ]
 }
 ```
 
+`channel_type`: `"video"` (default). `"music"` is reserved for a future release.
 `schedule_type`: `"genre_auto"` (default) or `"manual"`.
 `content_type` in genre filters: `"movie"`, `"episode"`, or `"both"`.
+`filter_type` in genre filters: `"include"` (default) fetches matching content; `"exclude"` removes matching items from the pool after fetching.
 
 On creation, a 7-day schedule is automatically generated if `schedule_type` is `"genre_auto"`.
 
@@ -172,7 +177,7 @@ Using `localhost` will cause Jellyfin's registration to fail.
 
 ### Unregister from Jellyfin Live TV
 
-**POST** `/api/channels/{id}/unregister-livetv`
+**DELETE** `/api/channels/{id}/register-livetv`
 
 Removes the TunerHost and ListingProvider registrations from Jellyfin.
 
@@ -278,6 +283,18 @@ Returns the single entry currently airing, or `null`.
 2. Series → Seasons (Series ID as parent)
 3. Season → Episodes (Season ID as parent)
 
+### Get genres for a library
+
+**GET** `/api/jellyfin/genres/{library_id}`
+
+Returns all genre names present in the given library. Used by the channel editor to populate the genre filter dropdown.
+
+```json
+{
+  "genres": ["Action", "Animation", "Comedy", "Crime", "Drama", "Horror", "Science Fiction", "Thriller"]
+}
+```
+
 ---
 
 ## Live TV  `/api/livetv/`
@@ -356,10 +373,12 @@ the viewer always joins mid-programme — just like real broadcast TV.
 1. Finds the `ScheduleEntry` spanning `now` (`start_time ≤ now < end_time`)
 2. Calculates `offset = now − start_time` in seconds
 3. Prefers direct file access (`file_path`) for near-instant seek; falls back to Jellyfin HTTP stream
-4. Runs:
+4. Probes audio tracks with `ffprobe` and selects the track matching `PREFERRED_AUDIO_LANGUAGE` (falls back to first audio track)
+5. Runs:
    ```
    ffmpeg -ss {offset} -probesize 262144 -analyzeduration 1000000 -fflags nobuffer
           -i {source}
+          -map 0:v:0  -map 0:{audio_index}
           -vf scale=-2:min(1080,ih) -c:v libx264 -preset veryfast -tune zerolatency
           -crf 20 -maxrate 8000k -bufsize 4000k
           -c:a aac -b:a 192k -ac 2
@@ -447,6 +466,7 @@ To force an immediate re-download:
 | `HOST` | `0.0.0.0` | Bind address |
 | `PORT` | `8000` | Listen port |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `PREFERRED_AUDIO_LANGUAGE` | `eng` | ISO 639-2 code for preferred audio track (`eng`, `jpn`, `fre`, …) |
 | `SCHEDULER_ENABLED` | `true` | Enable APScheduler background jobs |
 
 ---

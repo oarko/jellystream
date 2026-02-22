@@ -12,7 +12,7 @@ JellyStream now supports a PHP-based frontend alongside the FastAPI backend. Thi
 ## Architecture
 
 ```
-┌─────────────────┐      HTTP/API      ┌──────────────────┐
+┌─────────────────┐      HTTP/API       ┌──────────────────┐
 │  PHP Frontend   │ ◄─────────────────► │  FastAPI Backend │
 │  (Port 8080)    │                     │  (Port 8000)     │
 └────────┬────────┘                     └────────┬─────────┘
@@ -29,7 +29,7 @@ JellyStream now supports a PHP-based frontend alongside the FastAPI backend. Thi
 - Web UI and forms
 - Setup wizard
 - Configuration editor
-- Stream management interface
+- Channel management interface
 
 **FastAPI Backend** provides:
 - REST API endpoints
@@ -65,9 +65,11 @@ python run.py
 ### 2. API Client (`php/includes/api_client.php`)
 - `get()`, `post()`, `delete()` methods
 - Methods for all API endpoints:
-  - `getStreams()` - Get all streams
-  - `createStream()` - Create new stream
+  - `getChannels()` - Get all channels
+  - `createChannel($data)` - Create new channel (JSON body)
+  - `updateChannel($id, $data)` - Update channel (JSON body)
   - `getJellyfinLibraries()` - Get Jellyfin libraries
+  - `getJellyfinGenres($libraryId)` - Get genres for a library
   - And more...
 
 ### 3. Database Helper (`php/includes/database.php`)
@@ -77,7 +79,7 @@ python run.py
 - **`.env` file management** - Read/write configuration
 
 ### 4. Main Dashboard (`php/index.php`)
-- Stream overview
+- Channel overview
 - Quick links
 - Status indicators
 - Redirects to setup if not configured
@@ -90,7 +92,7 @@ python run.py
 
 ## Usage Examples
 
-### Example 1: Get Streams via API
+### Example 1: Get Channels via API
 
 ```php
 <?php
@@ -98,11 +100,11 @@ require_once 'config/config.php';
 require_once 'includes/api_client.php';
 
 $api = new ApiClient();
-$response = $api->getStreams();
+$response = $api->getChannels();
 
 if ($response['success']) {
-    foreach ($response['data'] as $stream) {
-        echo $stream['name'] . "\n";
+    foreach ($response['data'] as $channel) {
+        echo $channel['name'] . "\n";
     }
 }
 ?>
@@ -116,10 +118,10 @@ require_once 'config/config.php';
 require_once 'includes/database.php';
 
 $db = new Database();
-$streams = $db->getStreams();
+$channels = $db->query("SELECT * FROM channels");
 
-foreach ($streams as $stream) {
-    echo "{$stream['id']}: {$stream['name']}\n";
+foreach ($channels as $channel) {
+    echo "{$channel['id']}: {$channel['name']}\n";
 }
 ?>
 ```
@@ -250,13 +252,10 @@ server {
 
 You can now:
 
-1. **Extend the setup wizard** - Add more configuration options
-2. **Build stream management pages** - Full CRUD interface
-3. **Create scheduling UI** - Manage stream schedules
-4. **Add user authentication** - Login system
-5. **Build dashboard widgets** - Statistics, graphs, etc.
-
-All using PHP while leveraging the FastAPI backend!
+1. **Create your first channel** — Open `http://localhost:8080`, click "New Channel"
+2. **Assign libraries and genre filters** — Select Jellyfin libraries and genres to auto-populate the schedule
+3. **Register with Jellyfin Live TV** — Use the channel editor to register the M3U tuner and XMLTV guide
+4. **Tune in** — Open Jellyfin, navigate to Live TV, and watch your channel
 
 ## Troubleshooting
 
@@ -273,21 +272,21 @@ All using PHP while leveraging the FastAPI backend!
 sudo apt install php-sqlite3 php-curl php-json
 ```
 
-## Files Created
+## Files
 
 ```
 jellystream/
 ├── app/web/php/
 │   ├── config/
-│   │   └── config.php          # Configuration
+│   │   ├── config.php          # Constants (API_BASE_URL, APP_NAME)
+│   │   └── ports.php           # Dynamic host/port resolution (no hardcoded IPs)
 │   ├── includes/
-│   │   ├── api_client.php      # FastAPI client
-│   │   └── database.php        # Database helper
+│   │   ├── api_client.php      # FastAPI client (all endpoint wrappers)
+│   │   └── database.php        # SQLite PDO helper
 │   ├── pages/
-│   │   └── (additional pages)
+│   │   ├── channels.php        # Channel management list
+│   │   └── channel_edit.php    # Channel editor (libraries, genres, schedule)
 │   ├── index.php               # Main dashboard
-│   ├── setup.php               # Setup wizard
-│   └── README.md
-├── start-php.sh                # PHP server starter
+│   └── setup.php               # Setup wizard
 └── docs/PHP_FRONTEND.md        # This file
 ```

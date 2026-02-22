@@ -192,7 +192,8 @@ stdout_logfile=/var/log/lighttpd-supervisor.out.log
 Reload supervisor:
 
 ```bash
-sudo supervisorctl reloadstart jellystream-api
+sudo supervisorctl reload
+sudo supervisorctl start jellystream-api
 sudo supervisorctl start lighttpd
 ```
 
@@ -200,22 +201,16 @@ sudo supervisorctl start lighttpd
 
 ### Change PHP Frontend Port
 
-Edit setup wizard at http://localhost:8080/setup.php or manually edit:
-
-`app/web/php/.phpconfig`:
-```ini
-PHP_FRONTEND_PORT=8080
-API_BACKEND_PORT=8000
-```
+Edit the Lighttpd configuration (`/etc/lighttpd/conf-available/99-jellystream.conf` or your custom config) and change `server.port`.
 
 ### Change API Backend Port
 
 Edit `.env`:
 ```env
-PORT=8000
+PORT=8001
 ```
 
-Then update Lighttpd proxy configuration to match.
+Then update the Lighttpd proxy configuration (`proxy.server` port) and `app/web/php/config/ports.php` to match the new port.
 
 ## Performance Tuning
 

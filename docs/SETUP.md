@@ -18,8 +18,8 @@ cd jellystream
 ### 2. Create Virtual Environment
 
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+python3 -m venv venv
+source venv/bin/activate
 ```
 
 ### 3. Install Dependencies
@@ -41,11 +41,25 @@ Create a `.env` file from the example:
 cp .env.example .env
 ```
 
-Edit `.env` and configure your Jellyfin connection:
+Edit `.env` and configure your Jellyfin connection. Minimum required:
 
 ```env
 JELLYFIN_URL=http://your-jellyfin-server:8096
 JELLYFIN_API_KEY=your_api_key_here
+
+# Network address Jellyfin uses to reach JellyStream (must NOT be localhost)
+JELLYSTREAM_PUBLIC_URL=http://192.168.1.100:8000
+```
+
+Optional settings worth knowing:
+
+```env
+# ISO 639-2 language code — preferred audio track for the stream proxy
+PREFERRED_AUDIO_LANGUAGE=eng
+
+# Remap Jellyfin file paths to local paths (format: /jf/prefix:/local/prefix)
+# Leave empty if JellyStream and Jellyfin share the same file paths
+MEDIA_PATH_MAP=
 ```
 
 #### Getting a Jellyfin API Key
@@ -64,12 +78,6 @@ The database will be automatically created when you first run the application.
 
 ```bash
 python run.py
-```
-
-Or using uvicorn directly:
-
-```bash
-uvicorn app.main:app --reload
 ```
 
 The application will be available at: http://localhost:8000
@@ -167,6 +175,7 @@ PORT=8001
 ## Next Steps
 
 - Read the [API Documentation](API.md)
-- Configure your first stream
-- Set up scheduled programming
-- Add commercials and logos
+- Open the web interface at `http://localhost:8000` and create your first channel
+- Assign Jellyfin libraries and genre filters to the channel
+- Let JellyStream auto-generate a 7-day schedule
+- Register the M3U and XMLTV URLs with Jellyfin Live TV

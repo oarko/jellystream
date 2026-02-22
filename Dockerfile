@@ -2,28 +2,28 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# System dependencies:
+#   ffmpeg/ffprobe  — stream proxy and audio language detection (required)
+#   gcc             — needed to compile C extensions in some pip packages (aiohttp, greenlet)
+#   libgl1 / libglib2.0-0 — runtime libs for opencv-python
 RUN apt-get update && apt-get install -y \
+    ffmpeg \
     gcc \
-    g++ \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
-COPY requirements.txt .
-
 # Install Python dependencies
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application
 COPY . .
 
-# Create data directories
-RUN mkdir -p data/database data/commercials data/logos
+# Create persistent data directories
+RUN mkdir -p data/database data/commercials data/logos logs
 
-# Expose port
+# FastAPI port
 EXPOSE 8000
 
-# Run application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python3", "run.py"]

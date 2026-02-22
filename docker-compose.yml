@@ -1,7 +1,5 @@
-version: '3.8'
-
 services:
-  # FastAPI Backend
+  # FastAPI backend + APScheduler
   api:
     build:
       context: .
@@ -13,10 +11,18 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./.env:/app/.env:ro
+      # If your media files are stored locally and you want direct file access
+      # (enables faster seeking and .nfo sidecar parsing), mount the media root
+      # and set MEDIA_PATH_MAP in .env.  Example:
+      #   - /mnt/nas/media:/media:ro
     environment:
       - DATABASE_URL=sqlite:///./data/database/jellystream.db
       - JELLYFIN_URL=${JELLYFIN_URL}
       - JELLYFIN_API_KEY=${JELLYFIN_API_KEY}
+      - JELLYSTREAM_PUBLIC_URL=${JELLYSTREAM_PUBLIC_URL:-}
+      - PREFERRED_AUDIO_LANGUAGE=${PREFERRED_AUDIO_LANGUAGE:-eng}
+      - MEDIA_PATH_MAP=${MEDIA_PATH_MAP:-}
+      - SCHEDULER_ENABLED=${SCHEDULER_ENABLED:-true}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - PORT=${PORT:-8000}
     env_file:
@@ -31,7 +37,7 @@ services:
       retries: 3
       start_period: 40s
 
-  # PHP Frontend with Lighttpd
+  # PHP frontend served by Lighttpd
   frontend:
     build:
       context: .
@@ -58,7 +64,3 @@ services:
 networks:
   jellystream-network:
     driver: bridge
-
-volumes:
-  data:
-  logs:

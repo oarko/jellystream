@@ -23,6 +23,21 @@ $lib_resp  = $api->getJellyfinLibraries();
 $jf_libraries = ($lib_resp['success'] && isset($lib_resp['data']['libraries']))
     ? $lib_resp['data']['libraries']
     : [];
+
+// Pre-fill JellyStream public URL from health endpoint (JELLYSTREAM_PUBLIC_URL setting)
+// Falls back to the browser hostname if not configured.
+$health_resp = $api->healthCheck();
+$configured_public_url = $health_resp['data']['public_url'] ?? null;
+if ($configured_public_url) {
+    $public_url_default = $configured_public_url;
+} else {
+    $hostname = strtok($_SERVER['HTTP_HOST'] ?? 'localhost', ':');
+    $public_url_default = "http://{$hostname}:8000";
+}
+$public_url_is_local = in_array(
+    parse_url($public_url_default, PHP_URL_HOST),
+    ['localhost', '127.0.0.1', '::1']
+);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -66,13 +81,18 @@ $jf_libraries = ($lib_resp['success'] && isset($lib_resp['data']['libraries']))
         /* Genre filters */
         .genre-list { list-style: none; margin: 0; padding: 0; }
         .genre-item { display: flex; align-items: center; gap: 10px; background: #2a2a2a; border-radius: 6px; padding: 8px 12px; margin-bottom: 8px; }
+        .genre-item .genre-ft { font-size: 11px; font-weight: 700; padding: 2px 6px; border-radius: 10px; flex-shrink: 0; }
+        .genre-item .genre-ft.ft-include { background: #1b5e20; color: #a5d6a7; }
+        .genre-item .genre-ft.ft-exclude { background: #7f0000; color: #ef9a9a; }
         .genre-item .genre-name { flex: 1; font-size: 14px; }
         .genre-item .genre-ct { font-size: 12px; color: #888; }
         .genre-item button { background: #c0392b; border: none; color: #fff; border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
-        .genre-add-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
-        .genre-add-row input { flex: 2; }
-        .genre-add-row select { flex: 1; }
+        .genre-add-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+        .genre-add-row select { flex: 2; min-width: 120px; }
+        .genre-add-row select.ct-select { flex: 1; min-width: 100px; }
+        .genre-add-row select.ft-select { flex: 1; min-width: 100px; }
         .genre-add-row button { background: #00A4DC; border: none; color: #fff; border-radius: 4px; padding: 8px 14px; cursor: pointer; white-space: nowrap; }
+        .genre-loading { font-size: 12px; color: #888; margin-top: 4px; min-height: 16px; }
 
         .form-actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 8px; }
         .btn { padding: 10px 22px; border-radius: 4px; border: none; cursor: pointer; font-size: 14px; text-decoration: none; display: inline-block; }
@@ -114,6 +134,21 @@ $jf_libraries = ($lib_resp['success'] && isset($lib_resp['data']['libraries']))
                 <span class="slider"></span>
             </label>
             <label for="ch-enabled">Channel enabled</label>
+        </div>
+
+        <!-- Channel Type -->
+        <h2 style="margin-top:24px;">Channel Type</h2>
+        <div class="form-group">
+            <label>Type</label>
+            <select id="ch-type" onchange="onTypeChange()">
+                <option value="video" <?php echo (!$is_edit || ($channel['channel_type'] ?? 'video') === 'video') ? 'selected' : ''; ?>>
+                    Video (Movies &amp; TV Shows)
+                </option>
+                <option value="music" disabled <?php echo ($is_edit && ($channel['channel_type'] ?? '') === 'music') ? 'selected' : ''; ?>>
+                    Music (coming soon)
+                </option>
+            </select>
+            <div class="hint">Video channels pull from Movies and TV Shows libraries.</div>
         </div>
 
         <!-- Schedule Type -->
@@ -169,10 +204,16 @@ $jf_libraries = ($lib_resp['success'] && isset($lib_resp['data']['libraries']))
                 Restrict content to these genres. Leave empty to include all genres from the selected libraries.
             </div>
             <ul class="genre-list" id="genre-list">
-                <?php foreach (($channel['genre_filters'] ?? []) as $gf): ?>
+                <?php foreach (($channel['genre_filters'] ?? []) as $gf):
+                    $ft = htmlspecialchars($gf['filter_type'] ?? 'include');
+                    $ft_label = ($gf['filter_type'] ?? 'include') === 'exclude' ? 'Exclude' : 'Include';
+                    $ft_class = ($gf['filter_type'] ?? 'include') === 'exclude' ? 'ft-exclude' : 'ft-include';
+                ?>
                 <li class="genre-item"
                     data-genre="<?php echo htmlspecialchars($gf['genre']); ?>"
-                    data-ct="<?php echo htmlspecialchars($gf['content_type']); ?>">
+                    data-ct="<?php echo htmlspecialchars($gf['content_type']); ?>"
+                    data-filter-type="<?php echo $ft; ?>">
+                    <span class="genre-ft <?php echo $ft_class; ?>"><?php echo $ft_label; ?></span>
                     <span class="genre-name"><?php echo htmlspecialchars($gf['genre']); ?></span>
                     <span class="genre-ct"><?php echo htmlspecialchars($gf['content_type']); ?></span>
                     <button onclick="removeGenre(this)">✕</button>
@@ -180,31 +221,267 @@ $jf_libraries = ($lib_resp['success'] && isset($lib_resp['data']['libraries']))
                 <?php endforeach; ?>
             </ul>
             <div class="genre-add-row">
-                <input type="text" id="genre-input" placeholder="Genre name (e.g. Sci-Fi)">
-                <select id="genre-ct">
+                <select id="genre-select">
+                    <option value="">— Add a library first —</option>
+                </select>
+                <select id="genre-ct" class="ct-select">
                     <option value="both">Movies + Episodes</option>
                     <option value="movie">Movies only</option>
                     <option value="episode">Episodes only</option>
                 </select>
+                <select id="genre-filter-type" class="ft-select">
+                    <option value="include">Include</option>
+                    <option value="exclude">Exclude</option>
+                </select>
                 <button onclick="addGenre()">+ Add Genre</button>
             </div>
+            <div class="genre-loading" id="genre-loading"></div>
         </div>
+
+        <?php if ($is_edit): ?>
+        <!-- Schedule actions -->
+        <div style="margin-top:24px;border-top:1px solid #333;padding-top:16px;">
+            <h2>Schedule</h2>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                <button class="btn btn-secondary" onclick="regenerateSchedule()" id="regen-btn">
+                    ↺ Regenerate Schedule (7 days)
+                </button>
+                <span id="regen-status" style="font-size:13px;color:#888;"></span>
+            </div>
+            <div class="hint" style="margin-top:8px;">
+                Clears and rebuilds the schedule from scratch using the current library and genre settings.
+                Run this after changing libraries or genre filters.
+            </div>
+        </div>
+        <?php endif; ?>
 
         <!-- Actions -->
         <div class="form-actions">
             <a href="channels.php" class="btn btn-secondary">Cancel</a>
+            <?php if ($is_edit): ?>
+            <button class="btn" style="background:#c0392b;color:#fff;" onclick="deleteChannel()">Delete Channel</button>
+            <?php endif; ?>
             <button class="btn btn-primary" onclick="saveChannel()">
                 <?php echo $is_edit ? 'Save Changes' : 'Create Channel'; ?>
             </button>
         </div>
         <div id="status-msg"></div>
     </div>
+
+<?php if ($is_edit): ?>
+    <!-- Jellyfin Live TV Registration -->
+    <div class="card" id="livetv-card">
+        <h2>Jellyfin Live TV Registration</h2>
+
+        <?php
+        $registered = !empty($channel['tuner_host_id']) || !empty($channel['listing_provider_id']);
+        ?>
+
+        <div id="livetv-status" style="margin-bottom:16px;">
+            <?php if ($registered): ?>
+                <div style="background:#1b5e20;color:#a5d6a7;padding:10px 14px;border-radius:6px;font-size:13px;">
+                    ✅ Registered with Jellyfin Live TV<br>
+                    <small style="opacity:.8;">
+                        Tuner ID: <?php echo htmlspecialchars($channel['tuner_host_id'] ?? '—'); ?> &nbsp;|&nbsp;
+                        EPG ID: <?php echo htmlspecialchars($channel['listing_provider_id'] ?? '—'); ?>
+                    </small>
+                </div>
+            <?php else: ?>
+                <div style="background:#2a2a2a;color:#888;padding:10px 14px;border-radius:6px;font-size:13px;">
+                    Not registered — fill in the form below to add this channel to Jellyfin Live TV.
+                </div>
+            <?php endif; ?>
+        </div>
+
+        <?php if (!$registered): ?>
+        <!-- Registration form (only shown when not yet registered) -->
+        <div id="reg-form">
+            <?php if ($public_url_is_local): ?>
+            <div style="background:#7f2700;color:#ffccbc;padding:10px 14px;border-radius:6px;font-size:13px;margin-bottom:14px;">
+                ⚠️ The pre-filled URL uses <strong>localhost</strong>. Jellyfin cannot reach JellyStream via
+                <code>localhost</code> — it will try to connect to its own machine. Enter the network IP of
+                this JellyStream server (e.g. <code>http://10.12.1.134:8000</code>).<br>
+                <small style="opacity:.8;">
+                    Set <code>JELLYSTREAM_PUBLIC_URL=http://&lt;your-ip&gt;:8000</code> in your <code>.env</code>
+                    to avoid seeing this warning.
+                </small>
+            </div>
+            <?php endif; ?>
+            <div class="form-group">
+                <label>JellyStream Public URL <span style="color:#c0392b;">*</span></label>
+                <input type="text" id="reg-public-url"
+                    placeholder="http://192.168.1.100:8000"
+                    value="<?php echo htmlspecialchars($public_url_default); ?>">
+                <div class="hint">
+                    The URL Jellyfin uses to reach JellyStream. Must be the machine's network IP,
+                    not localhost. Registers a single global tuner — all channels are included automatically.
+                </div>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+                <div class="form-group">
+                    <label>Tuner Count</label>
+                    <input type="number" id="reg-tuner-count" value="1" min="0" max="32">
+                    <div class="hint">Max simultaneous streams. 0 = unlimited.</div>
+                </div>
+                <div class="form-group">
+                    <label>Fallback Max Bitrate (bps)</label>
+                    <input type="number" id="reg-max-bitrate" value="0" min="0">
+                    <div class="hint">0 = no limit.</div>
+                </div>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
+                <div class="toggle-row">
+                    <label class="switch">
+                        <input type="checkbox" id="reg-hw-transcode">
+                        <span class="slider"></span>
+                    </label>
+                    <label for="reg-hw-transcode" style="font-size:13px;">HW Transcoding</label>
+                </div>
+                <div class="toggle-row">
+                    <label class="switch">
+                        <input type="checkbox" id="reg-fmp4" >
+                        <span class="slider"></span>
+                    </label>
+                    <label for="reg-fmp4" style="font-size:13px;">fMP4 Container</label>
+                </div>
+                <div class="toggle-row">
+                    <label class="switch">
+                        <input type="checkbox" id="reg-stream-loop" checked>
+                        <span class="slider"></span>
+                    </label>
+                    <label for="reg-stream-loop" style="font-size:13px;">Stream Looping</label>
+                </div>
+                <div class="toggle-row">
+                    <label class="switch">
+                        <input type="checkbox" id="reg-stream-sharing" checked>
+                        <span class="slider"></span>
+                    </label>
+                    <label for="reg-stream-sharing" style="font-size:13px;">Stream Sharing</label>
+                </div>
+                <div class="toggle-row">
+                    <label class="switch">
+                        <input type="checkbox" id="reg-ignore-dts">
+                        <span class="slider"></span>
+                    </label>
+                    <label for="reg-ignore-dts" style="font-size:13px;">Ignore DTS</label>
+                </div>
+                <div class="toggle-row">
+                    <label class="switch">
+                        <input type="checkbox" id="reg-native-framerate">
+                        <span class="slider"></span>
+                    </label>
+                    <label for="reg-native-framerate" style="font-size:13px;">Native Framerate</label>
+                </div>
+            </div>
+
+            <button class="btn btn-primary" onclick="registerLiveTV()">Register with Jellyfin Live TV</button>
+        </div>
+        <?php else: ?>
+        <!-- Unregister option when already registered -->
+        <button class="btn btn-danger" onclick="unregisterLiveTV()" style="background:#c0392b;border:none;color:#fff;padding:10px 20px;border-radius:4px;cursor:pointer;">
+            Unregister from Jellyfin Live TV
+        </button>
+        <?php endif; ?>
+
+        <div id="livetv-msg" style="margin-top:14px;display:none;padding:10px 14px;border-radius:6px;font-size:13px;"></div>
+    </div>
+<?php endif; ?>
+
 </div>
 
 <script>
 const IS_EDIT    = <?php echo $is_edit ? 'true' : 'false'; ?>;
 const CHANNEL_ID = <?php echo $channel_id ?? 'null'; ?>;
 const API_BASE   = '<?php echo getApiBaseUrl(); ?>';
+
+// ── Channel type ──────────────────────────────────────────────────────────────
+// CollectionTypes valid for Video channels
+const VIDEO_TYPES = new Set(['movies', 'tvshows']);
+
+function onTypeChange() {
+    filterLibraryPicker();
+}
+
+function filterLibraryPicker() {
+    const type = document.getElementById('ch-type').value;
+    const picker = document.getElementById('lib-picker');
+    for (const opt of picker.options) {
+        if (!opt.value) continue; // keep placeholder
+        const ct = opt.dataset.type || '';
+        if (type === 'video') {
+            opt.hidden = !VIDEO_TYPES.has(ct);
+        } else {
+            opt.hidden = false;
+        }
+    }
+    // Reset selection if current is now hidden
+    const sel = picker.options[picker.selectedIndex];
+    if (sel && sel.hidden) picker.selectedIndex = 0;
+}
+
+// ── Genre dropdown pool ────────────────────────────────────────────────────────
+// Maps library_id → Set of genre strings fetched from the API
+const genrePool = {};
+
+async function fetchLibraryGenres(libraryId) {
+    const loading = document.getElementById('genre-loading');
+    loading.textContent = 'Loading genres…';
+    try {
+        const resp = await fetch(`${API_BASE}/jellyfin/genres/${encodeURIComponent(libraryId)}`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        genrePool[libraryId] = new Set(data.genres || []);
+        loading.textContent = '';
+    } catch (e) {
+        loading.textContent = `Could not load genres: ${e.message}`;
+        genrePool[libraryId] = new Set();
+    }
+    refreshGenreDropdown();
+}
+
+function refreshGenreDropdown() {
+    // Merge all genres from all libraries in the pool
+    const all = new Set();
+    for (const genres of Object.values(genrePool)) {
+        for (const g of genres) all.add(g);
+    }
+    const sorted = [...all].sort((a, b) => a.localeCompare(b));
+
+    // Collect already-added genres so we can mark them
+    const added = new Set(
+        [...document.querySelectorAll('#genre-list li')].map(li => li.dataset.genre)
+    );
+
+    const sel = document.getElementById('genre-select');
+    const prev = sel.value;
+    sel.innerHTML = '';
+
+    if (sorted.length === 0) {
+        const ph = document.createElement('option');
+        ph.value = '';
+        ph.textContent = Object.keys(genrePool).length === 0
+            ? '— Add a library first —'
+            : '— No genres found —';
+        sel.appendChild(ph);
+    } else {
+        const ph = document.createElement('option');
+        ph.value = '';
+        ph.textContent = '— Select a genre —';
+        sel.appendChild(ph);
+
+        for (const g of sorted) {
+            const opt = document.createElement('option');
+            opt.value = g;
+            opt.textContent = added.has(g) ? `${g} ✓` : g;
+            if (added.has(g)) opt.style.color = '#888';
+            sel.appendChild(opt);
+        }
+        // Restore previous selection if still valid
+        if (prev && sorted.includes(prev)) sel.value = prev;
+    }
+}
 
 function toggleGenreSection() {
     const mode = document.getElementById('ch-schedule-type').value;
@@ -213,7 +490,7 @@ function toggleGenreSection() {
 toggleGenreSection();
 
 // ── Library helpers ───────────────────────────────────────────────────────────
-function addLib() {
+async function addLib() {
     const picker = document.getElementById('lib-picker');
     const opt    = picker.options[picker.selectedIndex];
     if (!opt.value) return;
@@ -236,9 +513,20 @@ function addLib() {
     li.innerHTML = `<span class="lib-name">${esc(name)}</span><span class="lib-type">${esc(type)}</span><button onclick="removeLib(this)">✕</button>`;
     document.getElementById('lib-list').appendChild(li);
     picker.selectedIndex = 0;
+
+    // Fetch genres for this library and add to the pool
+    await fetchLibraryGenres(id);
 }
 
-function removeLib(btn) { btn.closest('li').remove(); }
+function removeLib(btn) {
+    const li = btn.closest('li');
+    const id = li.dataset.id;
+    li.remove();
+
+    // Remove this library's genres from the pool and refresh dropdown
+    delete genrePool[id];
+    refreshGenreDropdown();
+}
 
 function getLibraries() {
     return [...document.querySelectorAll('#lib-list li')].map(li => ({
@@ -250,28 +538,77 @@ function getLibraries() {
 
 // ── Genre helpers ─────────────────────────────────────────────────────────────
 function addGenre() {
-    const input = document.getElementById('genre-input');
-    const ct    = document.getElementById('genre-ct');
-    const genre = input.value.trim();
-    if (!genre) { alert('Enter a genre name.'); return; }
+    const sel = document.getElementById('genre-select');
+    const ct  = document.getElementById('genre-ct');
+    const ft  = document.getElementById('genre-filter-type');
+    const genre = sel.value;
+    if (!genre) { alert('Select a genre from the dropdown.'); return; }
+
+    // Prevent duplicates
+    const existing = document.querySelectorAll('#genre-list li');
+    for (const li of existing) {
+        if (li.dataset.genre === genre) { alert('Genre already added.'); return; }
+    }
+
+    const ftVal   = ft.value;
+    const ftLabel = ftVal === 'exclude' ? 'Exclude' : 'Include';
+    const ftClass = ftVal === 'exclude' ? 'ft-exclude' : 'ft-include';
 
     const li = document.createElement('li');
     li.className = 'genre-item';
-    li.dataset.genre = genre;
-    li.dataset.ct    = ct.value;
-    li.innerHTML = `<span class="genre-name">${esc(genre)}</span><span class="genre-ct">${esc(ct.value)}</span><button onclick="removeGenre(this)">✕</button>`;
+    li.dataset.genre      = genre;
+    li.dataset.ct         = ct.value;
+    li.dataset.filterType = ftVal;
+    li.innerHTML = `<span class="genre-ft ${ftClass}">${ftLabel}</span><span class="genre-name">${esc(genre)}</span><span class="genre-ct">${esc(ct.value)}</span><button onclick="removeGenre(this)">✕</button>`;
     document.getElementById('genre-list').appendChild(li);
-    input.value = '';
+    sel.value = '';
     ct.selectedIndex = 0;
+    ft.selectedIndex = 0;
+
+    // Refresh dropdown to show checkmark on added genre
+    refreshGenreDropdown();
 }
 
-function removeGenre(btn) { btn.closest('li').remove(); }
+function removeGenre(btn) {
+    btn.closest('li').remove();
+    // Refresh to un-mark the genre in the dropdown
+    refreshGenreDropdown();
+}
 
 function getGenreFilters() {
     return [...document.querySelectorAll('#genre-list li')].map(li => ({
         genre:        li.dataset.genre,
         content_type: li.dataset.ct,
+        filter_type:  li.dataset.filterType || 'include',
     }));
+}
+
+// ── Regenerate Schedule ───────────────────────────────────────────────────────
+async function regenerateSchedule() {
+    const btn = document.getElementById('regen-btn');
+    const status = document.getElementById('regen-status');
+    btn.disabled = true;
+    status.style.color = '#888';
+    status.textContent = 'Generating…';
+
+    try {
+        const resp = await fetch(`<?php echo API_BASE_URL; ?>/channels/<?php echo (int)$channel_id; ?>/generate-schedule?days=7&reset=true`, {
+            method: 'POST',
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            status.style.color = '#27ae60';
+            status.textContent = `✓ ${data.count ?? 0} schedule entries created.`;
+        } else {
+            status.style.color = '#e74c3c';
+            status.textContent = `Error: ${data.detail ?? resp.status}`;
+        }
+    } catch (e) {
+        status.style.color = '#e74c3c';
+        status.textContent = 'Request failed — is the API running?';
+    } finally {
+        btn.disabled = false;
+    }
 }
 
 // ── Save ──────────────────────────────────────────────────────────────────────
@@ -283,13 +620,14 @@ async function saveChannel() {
     if (!libs.length) { showStatus('Add at least one library.', false); return; }
 
     const payload = {
-        name:          name,
-        description:   document.getElementById('ch-desc').value.trim() || null,
+        name:           name,
+        description:    document.getElementById('ch-desc').value.trim() || null,
         channel_number: document.getElementById('ch-num').value.trim() || null,
-        enabled:       document.getElementById('ch-enabled').checked,
-        schedule_type: document.getElementById('ch-schedule-type').value,
-        libraries:     libs,
-        genre_filters: getGenreFilters(),
+        enabled:        document.getElementById('ch-enabled').checked,
+        channel_type:   document.getElementById('ch-type').value,
+        schedule_type:  document.getElementById('ch-schedule-type').value,
+        libraries:      libs,
+        genre_filters:  getGenreFilters(),
     };
 
     const url    = IS_EDIT ? `${API_BASE}/channels/${CHANNEL_ID}` : `${API_BASE}/channels/`;
@@ -325,6 +663,103 @@ function esc(s) {
         .replace(/&/g,'&amp;').replace(/</g,'&lt;')
         .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+
+// ── Delete ────────────────────────────────────────────────────────────────────
+async function deleteChannel() {
+    const name = document.getElementById('ch-name').value.trim() || 'this channel';
+    if (!confirm(`Delete "${name}"?\n\nThis will permanently remove the channel and all its schedule entries. This cannot be undone.`)) return;
+
+    try {
+        const resp = await fetch(`${API_BASE}/channels/${CHANNEL_ID}`, { method: 'DELETE' });
+        const data = await resp.json();
+        if (resp.ok) {
+            window.location.href = 'channels.php';
+        } else {
+            showStatus(data.detail || 'Delete failed.', false);
+        }
+    } catch (e) {
+        showStatus('Network error: ' + e.message, false);
+    }
+}
+
+// ── Live TV Registration ───────────────────────────────────────────────────────
+async function registerLiveTV() {
+    const publicUrl = document.getElementById('reg-public-url')?.value.trim();
+    if (!publicUrl) { showLiveTVMsg('Public URL is required.', false); return; }
+
+    const payload = {
+        public_url:               publicUrl,
+        tuner_count:              parseInt(document.getElementById('reg-tuner-count').value) || 1,
+        fallback_max_bitrate:     parseInt(document.getElementById('reg-max-bitrate').value) || 0,
+        allow_hw_transcoding:     document.getElementById('reg-hw-transcode').checked,
+        allow_fmp4_transcoding:   document.getElementById('reg-fmp4').checked,
+        enable_stream_looping:    document.getElementById('reg-stream-loop').checked,
+        allow_stream_sharing:     document.getElementById('reg-stream-sharing').checked,
+        ignore_dts:               document.getElementById('reg-ignore-dts').checked,
+        read_at_native_framerate: document.getElementById('reg-native-framerate').checked,
+    };
+
+    showLiveTVMsg('Registering…', true);
+    try {
+        const resp = await fetch(`${API_BASE}/channels/${CHANNEL_ID}/register-livetv`, {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify(payload),
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            showLiveTVMsg(
+                `Registered! Tuner ID: ${data.tuner_host_id} | EPG ID: ${data.listing_provider_id}`,
+                true
+            );
+            setTimeout(() => location.reload(), 1800);
+        } else {
+            showLiveTVMsg(data.detail || JSON.stringify(data), false);
+        }
+    } catch (e) {
+        showLiveTVMsg('Network error: ' + e.message, false);
+    }
+}
+
+async function unregisterLiveTV() {
+    if (!confirm('Remove this channel from Jellyfin Live TV?')) return;
+
+    showLiveTVMsg('Unregistering…', true);
+    try {
+        const resp = await fetch(`${API_BASE}/channels/${CHANNEL_ID}/register-livetv`, {
+            method: 'DELETE',
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            showLiveTVMsg(data.message || 'Unregistered.', true);
+            setTimeout(() => location.reload(), 1200);
+        } else {
+            showLiveTVMsg(data.detail || JSON.stringify(data), false);
+        }
+    } catch (e) {
+        showLiveTVMsg('Network error: ' + e.message, false);
+    }
+}
+
+function showLiveTVMsg(msg, ok) {
+    const el = document.getElementById('livetv-msg');
+    if (!el) return;
+    el.textContent   = msg;
+    el.style.background = ok ? '#1b5e20' : '#7f0000';
+    el.style.color      = ok ? '#a5d6a7' : '#ef9a9a';
+    el.style.display    = 'block';
+}
+
+// ── Initialisation ────────────────────────────────────────────────────────────
+// Filter the library picker based on current channel type
+filterLibraryPicker();
+
+// In edit mode: pre-load genres for all libraries already attached to the channel
+(async () => {
+    const existingLibs = document.querySelectorAll('#lib-list li');
+    const fetches = [...existingLibs].map(li => fetchLibraryGenres(li.dataset.id));
+    await Promise.all(fetches);
+})();
 </script>
 </body>
 </html>

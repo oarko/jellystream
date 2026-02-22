@@ -16,7 +16,8 @@ class LibraryConfig(BaseModel):
 class GenreFilterConfig(BaseModel):
     """A genre filter applied to a channel's schedule generation."""
     genre: str
-    content_type: str = "both"  # "movie" | "episode" | "both"
+    content_type: str = "both"   # "movie" | "episode" | "both"
+    filter_type: str = "include"  # "include" | "exclude"
 
 
 class CreateChannelRequest(BaseModel):
@@ -24,6 +25,7 @@ class CreateChannelRequest(BaseModel):
     name: str
     description: Optional[str] = None
     channel_number: Optional[str] = None
+    channel_type: str = "video"        # "video" | "music" (music planned)
     schedule_type: str = "genre_auto"  # "manual" | "genre_auto"
     libraries: List[LibraryConfig]
     genre_filters: Optional[List[GenreFilterConfig]] = None
@@ -35,6 +37,7 @@ class UpdateChannelRequest(BaseModel):
     description: Optional[str] = None
     channel_number: Optional[str] = None
     enabled: Optional[bool] = None
+    channel_type: Optional[str] = None
     schedule_type: Optional[str] = None
     libraries: Optional[List[LibraryConfig]] = None
     genre_filters: Optional[List[GenreFilterConfig]] = None
@@ -66,3 +69,23 @@ class UpdateScheduleEntryRequest(BaseModel):
     series_name: Optional[str] = None
     season_number: Optional[int] = None
     episode_number: Optional[int] = None
+
+
+# ─── Live TV Registration Schemas ─────────────────────────────────────────────
+
+class RegisterLiveTVRequest(BaseModel):
+    """
+    Request body for POST /api/channels/{id}/register-livetv
+
+    public_url must be reachable from the Jellyfin server
+    (e.g. "http://192.168.1.100:8000").
+    """
+    public_url: str                        # JellyStream base URL as seen by Jellyfin
+    tuner_count: int = 1                   # Max simultaneous streams (0 = unlimited)
+    allow_hw_transcoding: bool = False
+    allow_fmp4_transcoding: bool = False
+    allow_stream_sharing: bool = True
+    enable_stream_looping: bool = True
+    fallback_max_bitrate: int = 0          # 0 = no limit
+    ignore_dts: bool = False
+    read_at_native_framerate: bool = False

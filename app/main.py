@@ -81,7 +81,10 @@ async def api_root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "healthy"}
+    return {
+        "status": "healthy",
+        "public_url": settings.JELLYSTREAM_PUBLIC_URL or None,
+    }
 
 
 @app.get("/favicon.ico")

@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 
@@ -55,3 +56,20 @@ async def init_db():
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # Safe column migrations — silently ignored if the column already exists
+    _migrations = [
+        "ALTER TABLE schedule_entries ADD COLUMN file_path TEXT",
+        "ALTER TABLE schedule_entries ADD COLUMN description TEXT",
+        "ALTER TABLE schedule_entries ADD COLUMN content_rating VARCHAR(20)",
+        "ALTER TABLE schedule_entries ADD COLUMN thumbnail_path TEXT",
+        "ALTER TABLE schedule_entries ADD COLUMN air_date VARCHAR(20)",
+        "ALTER TABLE channels ADD COLUMN channel_type VARCHAR(20) DEFAULT 'video'",
+        "ALTER TABLE genre_filters ADD COLUMN filter_type VARCHAR(10) DEFAULT 'include'",
+    ]
+    for stmt in _migrations:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(stmt))
+        except Exception:
+            pass  # column already exists

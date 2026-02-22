@@ -6,7 +6,9 @@ current schedule ends (or from now if no schedule exists).
 """
 
 import json
+import os
 import random
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -26,6 +28,106 @@ logger = get_logger(__name__)
 # Minimum ticks for a valid item (30 seconds = 300,000,000 ticks)
 _MIN_TICKS = 300_000_000
 _TICKS_PER_SECOND = 10_000_000
+
+
+def _extract_path(item: dict) -> Optional[str]:
+    """
+    Extract the local file path from a Jellyfin item dict.
+
+    Tries `Path` first (requires admin/download permission).
+    Falls back to `MediaSources[0].Path` which is available to more users.
+    """
+    path = item.get("Path")
+    if not path:
+        sources = item.get("MediaSources") or []
+        path = sources[0].get("Path") if sources else None
+    return path or None
+
+
+def _apply_path_map(path: Optional[str]) -> Optional[str]:
+    """
+    Rewrite a Jellyfin server file path to a locally accessible path using
+    MEDIA_PATH_MAP (format: "/jellyfin/prefix:/local/prefix").
+
+    Returns the original path unchanged if no mapping is configured or the
+    path does not start with the configured Jellyfin prefix.
+    """
+    if not path:
+        return None
+    path_map = getattr(settings, "MEDIA_PATH_MAP", "")
+    if not path_map or ":" not in path_map:
+        return path
+    jf_prefix, local_prefix = path_map.split(":", 1)
+    if path.startswith(jf_prefix):
+        remapped = local_prefix + path[len(jf_prefix):]
+        logger.debug(f"_apply_path_map: {path!r} → {remapped!r}")
+        return remapped
+    return path
+
+
+def _parse_nfo(file_path: str) -> dict:
+    """
+    Parse the Kodi/Jellyfin .nfo sidecar next to a media file.
+
+    Looks for <basename>.nfo alongside the video file.
+    Returns a dict with keys: description, content_rating, air_date.
+    Returns an empty dict if the .nfo doesn't exist or can't be parsed.
+    """
+    base = os.path.splitext(file_path)[0]
+    nfo_path = base + ".nfo"
+    if not os.path.isfile(nfo_path):
+        return {}
+    try:
+        tree = ET.parse(nfo_path)
+        root = tree.getroot()
+
+        def _text(tag: str) -> Optional[str]:
+            el = root.find(tag)
+            if el is None:
+                return None
+            # Handle CDATA / stripped whitespace
+            return (el.text or "").strip() or None
+
+        result: dict = {}
+        if plot := _text("plot"):
+            result["description"] = plot
+        if mpaa := _text("mpaa"):
+            result["content_rating"] = mpaa
+        # Prefer <aired> (episode air date), fall back to <year>
+        result["air_date"] = _text("aired") or _text("year")
+
+        logger.debug(f"_parse_nfo: {nfo_path!r} → {list(result.keys())}")
+        return result
+    except ET.ParseError as exc:
+        logger.warning(f"_parse_nfo: failed to parse {nfo_path!r}: {exc}")
+        return {}
+
+
+def _find_thumbnail(file_path: str) -> Optional[str]:
+    """
+    Look for a preview image next to the media file.
+
+    Search order:
+    1. <basename>.jpg              — episode-specific thumbnail
+    2. <basename>-thumb.jpg        — alternative episode thumbnail
+    3. <same dir>/folder.jpg       — movie folder OR flat TV series (no Season subdir)
+    4. <parent dir>/folder.jpg     — TV series folder when episode is in a Season X/ subdir
+
+    Returns the absolute path if found, else None.
+    """
+    base = os.path.splitext(file_path)[0]
+    same_dir = os.path.dirname(file_path)
+    parent_dir = os.path.dirname(same_dir)
+    for candidate in (
+        base + ".jpg",
+        base + "-thumb.jpg",
+        os.path.join(same_dir, "folder.jpg"),
+        os.path.join(parent_dir, "folder.jpg"),
+    ):
+        if os.path.isfile(candidate):
+            logger.debug(f"_find_thumbnail: found {candidate!r}")
+            return candidate
+    return None
 
 
 def _get_client() -> JellyfinClient:
@@ -79,7 +181,7 @@ async def _fetch_genre_items(
                 "ParentId": library_id,
                 "Recursive": "true",
                 "IncludeItemTypes": include_types,
-                "Fields": "RunTimeTicks,Genres,SeriesName,ParentIndexNumber,IndexNumber",
+                "Fields": "RunTimeTicks,Genres,SeriesName,ParentIndexNumber,IndexNumber,Path,MediaSources",
                 "Limit": page_size,
                 "StartIndex": start_index,
                 "SortBy": "SortName",
@@ -88,7 +190,10 @@ async def _fetch_genre_items(
             if genres_param:
                 params["Genres"] = genres_param
 
-            url = f"{client.base_url}/Users/{user_id}/Items"
+            # Use the admin /Items endpoint (API-key level access) so that
+            # the Path field is returned regardless of user permission level.
+            params["UserId"] = user_id
+            url = f"{client.base_url}/Items"
             async with session.get(url, headers=client.headers, params=params) as resp:
                 resp.raise_for_status()
                 data = await resp.json()
@@ -160,16 +265,26 @@ async def generate_channel_schedule(
     )
     genre_filters = gf_result.scalars().all()
 
+    # ── Separate include vs exclude genre filters ─────────────────────────────
+    include_filters = [gf for gf in genre_filters if gf.filter_type != "exclude"]
+    exclude_genres = {gf.genre for gf in genre_filters if gf.filter_type == "exclude"}
+
+    if exclude_genres:
+        logger.info(
+            f"generate_channel_schedule: channel {channel_id} — "
+            f"will exclude genres: {sorted(exclude_genres)}"
+        )
+
     # ── Build item pool ───────────────────────────────────────────────────────
     client = _get_client()
     item_pool: List[dict] = []
     seen_ids: set = set()
 
     for lib in libraries:
-        if genre_filters:
-            # Group filters by content_type to minimise API calls
+        if include_filters:
+            # Group include filters by content_type to minimise API calls
             by_type: dict = {}
-            for gf in genre_filters:
+            for gf in include_filters:
                 by_type.setdefault(gf.content_type, []).append(gf.genre)
 
             for content_type, genres in by_type.items():
@@ -190,7 +305,7 @@ async def generate_channel_schedule(
                         seen_ids.add(item["Id"])
                         item_pool.append(item)
         else:
-            # No genre filters — fetch everything (movies + episodes)
+            # No include filters — fetch everything (movies + episodes)
             try:
                 fetched = await _fetch_genre_items(client, lib.library_id, [], "both")
             except Exception as exc:
@@ -205,6 +320,20 @@ async def generate_channel_schedule(
                 if item["Id"] not in seen_ids:
                     seen_ids.add(item["Id"])
                     item_pool.append(item)
+
+    # ── Apply exclude genre filter ────────────────────────────────────────────
+    if exclude_genres and item_pool:
+        before = len(item_pool)
+        item_pool = [
+            item for item in item_pool
+            if not any(g in exclude_genres for g in (item.get("Genres") or []))
+        ]
+        removed = before - len(item_pool)
+        if removed:
+            logger.info(
+                f"generate_channel_schedule: channel {channel_id} — "
+                f"removed {removed} items matching excluded genres"
+            )
 
     if not item_pool:
         logger.warning(
@@ -261,6 +390,10 @@ async def generate_channel_schedule(
         genres_list = item.get("Genres", [])
         genres_json = json.dumps(genres_list) if genres_list else None
 
+        local_path = _apply_path_map(_extract_path(item))
+        nfo = _parse_nfo(local_path) if local_path else {}
+        thumb = _find_thumbnail(local_path) if local_path else None
+
         entry = ScheduleEntry(
             channel_id=channel_id,
             title=item.get("Name", "Unknown"),
@@ -274,6 +407,11 @@ async def generate_channel_schedule(
             start_time=cursor,
             end_time=end_time,
             duration=duration_seconds,
+            file_path=local_path,
+            description=nfo.get("description"),
+            content_rating=nfo.get("content_rating"),
+            air_date=nfo.get("air_date"),
+            thumbnail_path=thumb,
         )
         new_entries.append(entry)
         cursor = end_time

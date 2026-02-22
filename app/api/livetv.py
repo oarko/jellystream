@@ -6,8 +6,10 @@ FastAPI does not match "all" as an integer channel_id.
 """
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -23,6 +25,8 @@ router = APIRouter()
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def _base_url() -> str:
+    if settings.JELLYSTREAM_PUBLIC_URL:
+        return settings.JELLYSTREAM_PUBLIC_URL.rstrip("/")
     host = settings.HOST.rstrip("/")
     if not host.startswith("http"):
         host = f"http://{host}"
@@ -33,8 +37,8 @@ def _m3u_line(channel: Channel) -> str:
     ch_num = channel.channel_number or f"100.{channel.id}"
     stream_url = f"{_base_url()}/api/livetv/stream/{channel.id}"
     lines = (
-        f'#EXTINF:-1 channel-id="{channel.id}" channel-number="{ch_num}" '
-        f'tvg-name="{channel.name}" tvg-id="{channel.id}" group-title="JellyStream",'
+        f'#EXTINF:-1 tvg-id="{channel.id}" tvg-name="{channel.name}" '
+        f'tvg-chno="{ch_num}" group-title="JellyStream",'
         f'{ch_num} {channel.name}\n'
         f'{stream_url}\n'
     )
@@ -61,6 +65,18 @@ def _xmltv_programme(entry: ScheduleEntry) -> str:
     if entry.series_name:
         lines += f'    <sub-title>{_xml_escape(entry.series_name)}</sub-title>\n'
 
+    if entry.description:
+        lines += f'    <desc lang="en">{_xml_escape(entry.description)}</desc>\n'
+
+    # Thumbnail icon served via JellyStream's thumbnail endpoint
+    if entry.thumbnail_path:
+        thumb_url = f"{_base_url()}/api/livetv/thumbnail/{entry.id}"
+        lines += f'    <icon src="{thumb_url}"/>\n'
+
+    if entry.air_date:
+        # XMLTV <date> wants YYYYMMDD; strip any "-" separators
+        lines += f'    <date>{entry.air_date.replace("-", "")}</date>\n'
+
     if entry.season_number and entry.episode_number:
         # XMLTV uses 0-based season/episode numbers
         lines += (
@@ -78,6 +94,13 @@ def _xmltv_programme(entry: ScheduleEntry) -> str:
                 lines += f'    <category>{_xml_escape(g)}</category>\n'
         except (json.JSONDecodeError, TypeError):
             pass
+
+    if entry.content_rating:
+        lines += (
+            f'    <rating system="MPAA">'
+            f'<value>{_xml_escape(entry.content_rating)}</value>'
+            f'</rating>\n'
+        )
 
     lines += '  </programme>\n'
     return lines
@@ -172,7 +195,15 @@ async def get_all_xmltv(db: AsyncSession = Depends(get_db)):
         f"get_all_xmltv: {len(channels)} channels, "
         f"~{total_entries} programme entries in window"
     )
-    return Response(content=xmltv, media_type="application/xml")
+    return Response(
+        content=xmltv,
+        media_type="application/xml",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 # ─── GET /api/livetv/m3u/{channel_id} ────────────────────────────────────────
@@ -235,6 +266,40 @@ async def get_channel_xmltv(channel_id: int, db: AsyncSession = Depends(get_db))
         f"{len(entries)} entries in EPG window"
     )
     return Response(content=xmltv, media_type="application/xml")
+
+
+# ─── GET /api/livetv/thumbnail/{entry_id} ────────────────────────────────────
+
+@router.get("/thumbnail/{entry_id}")
+async def get_entry_thumbnail(entry_id: int, db: AsyncSession = Depends(get_db)):
+    """Serve the preview thumbnail for a schedule entry."""
+    result = await db.execute(
+        select(ScheduleEntry).where(ScheduleEntry.id == entry_id)
+    )
+    entry = result.scalar_one_or_none()
+    if not entry or not entry.thumbnail_path:
+        raise HTTPException(status_code=404, detail="No thumbnail available")
+    if not os.path.isfile(entry.thumbnail_path):
+        raise HTTPException(status_code=404, detail="Thumbnail file not found on disk")
+    logger.debug(f"get_entry_thumbnail: serving {entry.thumbnail_path!r}")
+    return FileResponse(entry.thumbnail_path, media_type="image/jpeg")
+
+
+# ─── HEAD /api/livetv/stream/{channel_id} ────────────────────────────────────
+# Jellyfin probes streams with HEAD before opening them.  Return 200 + correct
+# Content-Type without starting ffmpeg.
+
+@router.head("/stream/{channel_id}")
+async def stream_channel_head(channel_id: int, db: AsyncSession = Depends(get_db)):
+    """Probe endpoint — confirms stream availability without starting ffmpeg."""
+    from app.services.stream_proxy import get_current_entry
+    entry = await get_current_entry(channel_id, db)
+    if not entry:
+        raise HTTPException(status_code=404, detail="No content scheduled at this time")
+    return Response(
+        status_code=200,
+        headers={"Content-Type": _MEDIA_TYPE, "Accept-Ranges": "none"},
+    )
 
 
 # ─── GET /api/livetv/stream/{channel_id} ─────────────────────────────────────

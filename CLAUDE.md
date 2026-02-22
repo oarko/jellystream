@@ -12,13 +12,16 @@
 - M3U + XMLTV endpoints expose the channel to Jellyfin Live TV (or any IPTV player)
 - When a viewer tunes in, ffmpeg **seeks to the correct offset** — no restarting from the beginning
 - A **background scheduler** (APScheduler) runs nightly to extend schedules 48+ hours ahead
+- Kodi/Jellyfin sidecar `.nfo` and `.jpg` files are read at schedule generation time to enrich EPG data
 
 ### Key Features
 - Genre-based auto-schedule generation (fills 7 days from Jellyfin content)
 - Multiple libraries per channel (mix Movies + TV Shows on one channel)
 - Manual schedule override support
 - M3U playlist + XMLTV EPG generation (3-hour lookback, 7-day forward)
-- ffmpeg stream proxy with time-offset seeking
+- XMLTV enriched with plot, thumbnail, air date, content rating from `.nfo`/`.jpg` sidecars
+- ffmpeg stream proxy: H.264/AAC 1080p transcoding with time-offset seeking
+- Direct file access for near-instant seek (falls back to Jellyfin HTTP stream)
 - Persistent schedules (same time = same content regardless of viewer)
 - APScheduler daily background job for schedule maintenance
 - Comprehensive debug/notice logging in all modules
@@ -54,7 +57,7 @@ jellystream/
 │   │   └── schemas.py    # Pydantic request/response models
 │   ├── core/             # Core functionality
 │   │   ├── config.py     # Configuration management
-│   │   ├── database.py   # Database initialization
+│   │   ├── database.py   # Database initialization + migrations
 │   │   └── logging_config.py  # Logging setup (get_logger)
 │   ├── integrations/     # External integrations
 │   │   └── jellyfin.py   # JellyfinClient with full auth
@@ -64,7 +67,7 @@ jellystream/
 │   │   ├── genre_filter.py     # Genre filters per channel
 │   │   └── schedule_entry.py   # Persistent schedule entries
 │   ├── services/         # Business logic services
-│   │   ├── schedule_generator.py  # Genre-based schedule builder
+│   │   ├── schedule_generator.py  # Genre-based schedule builder + NFO parsing
 │   │   ├── stream_proxy.py        # ffmpeg stream proxy with offset
 │   │   └── scheduler.py           # APScheduler background jobs
 │   ├── web/              # Web interface
@@ -142,9 +145,17 @@ jellystream/
 - end_time: DateTime NOT NULL   # start_time + duration
 - duration: Integer NOT NULL   # seconds
 - genres: Text nullable   # JSON array string
+- file_path: Text nullable   # local path for direct file seek
+- description: Text nullable   # <plot> from .nfo sidecar
+- content_rating: String(20) nullable   # <mpaa> from .nfo e.g. "TV-14"
+- thumbnail_path: Text nullable   # absolute path to .jpg sidecar
+- air_date: String(20) nullable   # "YYYY-MM-DD" from <aired> in .nfo
 - created_at: DateTime server_default
 # Index on (channel_id, start_time) for fast EPG lookups
 ```
+
+New columns are added via safe `ALTER TABLE` migrations in `database.py`
+(silently ignored if the column already exists).
 
 ## API Endpoints
 
@@ -155,7 +166,7 @@ See [docs/API.md](docs/API.md) for comprehensive documentation.
 ### Application
 - `GET /` — Web interface
 - `GET /api` — API info
-- `GET /health` — Health check
+- `GET /health` — Health check (returns `status` + `public_url`)
 - `GET /docs` — Swagger UI
 - `GET /redoc` — ReDoc
 
@@ -165,7 +176,9 @@ See [docs/API.md](docs/API.md) for comprehensive documentation.
 - `POST /api/channels/` — Create channel (JSON body: CreateChannelRequest)
 - `PUT /api/channels/{id}` — Update channel (JSON body: UpdateChannelRequest)
 - `DELETE /api/channels/{id}` — Delete channel (cascades all related data)
-- `POST /api/channels/{id}/generate-schedule` — Manually trigger 7-day schedule gen
+- `POST /api/channels/{id}/generate-schedule?days=7&reset=true` — Regenerate schedule
+- `POST /api/channels/{id}/register-livetv` — Register global M3U+XMLTV with Jellyfin
+- `POST /api/channels/{id}/unregister-livetv` — Remove Jellyfin registration
 
 ### Schedules (`app/api/schedules.py`)
 - `GET /api/schedules/channel/{channel_id}` — Get schedule (default: -3h to +7d)
@@ -184,6 +197,8 @@ See [docs/API.md](docs/API.md) for comprehensive documentation.
 - `GET /api/livetv/m3u/{channel_id}` — M3U for one channel
 - `GET /api/livetv/xmltv/all` — XMLTV EPG for all (3hr back, 7d forward)
 - `GET /api/livetv/xmltv/{channel_id}` — XMLTV EPG for one channel
+- `GET /api/livetv/thumbnail/{entry_id}` — Serve `.jpg` sidecar for a schedule entry
+- `HEAD /api/livetv/stream/{channel_id}` — Probe endpoint (Jellyfin uses before GET)
 - `GET /api/livetv/stream/{channel_id}` — ffmpeg proxy stream at current offset
 
 ## Pydantic Schemas (`app/api/schemas.py`)
@@ -227,20 +242,42 @@ class CreateScheduleEntryRequest(BaseModel):
 
 ### Schedule Generator (`app/services/schedule_generator.py`)
 
-Fetches genre-matching items from Jellyfin for each of a channel's libraries, then fills time slots sequentially from `schedule_generated_through` (or now). Stores ScheduleEntry rows. Updates `channel.schedule_generated_through`.
+Fetches genre-matching items from Jellyfin for each of a channel's libraries, then
+fills time slots sequentially from `schedule_generated_through` (or now). Stores
+ScheduleEntry rows. Updates `channel.schedule_generated_through`.
 
-**Jellyfin genre filtering uses**:
-```
-GET /Users/{userId}/Items?ParentId={libraryId}&Genres={genre}&IncludeItemTypes=Movie,Episode&Recursive=true
-```
+**Uses the admin `/Items` endpoint** (not `/Users/{id}/Items`) so that the `Path`
+field is returned regardless of user permission level.
+
+**Fields requested**: `RunTimeTicks,Genres,SeriesName,ParentIndexNumber,IndexNumber,Path,MediaSources`
+
+Path extraction order: `item["Path"]` → `item["MediaSources"][0]["Path"]` → `None`
+
+**Sidecar parsing**: After resolving `file_path`, reads `<basename>.nfo` (Kodi XML)
+for `description` / `content_rating` / `air_date`, and looks for `<basename>.jpg`
+(or `-thumb.jpg`) as `thumbnail_path`.
+
+**MEDIA_PATH_MAP**: Format `/jellyfin/prefix:/local/prefix` — rewrites Jellyfin server
+paths to locally accessible paths. Leave blank when both machines share the same mount.
 
 ### Stream Proxy (`app/services/stream_proxy.py`)
 
 1. Finds current ScheduleEntry: `start_time <= now < end_time`
 2. Calculates `offset = now - start_time` in seconds
-3. Calls `JellyfinClient.get_stream_url(media_item_id)` for the direct video URL
-4. Launches `ffmpeg -ss {offset} -i {url} -c copy -f mpegts pipe:1`
-5. Returns `StreamingResponse` wrapping ffmpeg stdout
+3. Prefers `entry.file_path` (direct local file — near-instant seek); falls back to
+   `JellyfinClient.get_stream_url(media_item_id)` (Jellyfin HTTP stream)
+4. Launches ffmpeg:
+   ```
+   ffmpeg -ss {offset} -probesize 262144 -analyzeduration 1000000 -fflags nobuffer
+          -i {source}
+          -vf scale=-2:min(1080,ih) -c:v libx264 -preset veryfast -tune zerolatency
+          -crf 20 -maxrate 8000k -bufsize 4000k
+          -c:a aac -b:a 192k -ac 2
+          -f mpegts -loglevel warning pipe:1
+   ```
+5. Returns `StreamingResponse` (`video/mp2t`) wrapping ffmpeg stdout
+6. `X-Entry-Title` header is ASCII-encoded (non-ASCII chars replaced with `?`) to avoid
+   latin-1 encoding errors in Starlette headers
 
 ### Background Scheduler (`app/services/scheduler.py`)
 
@@ -288,11 +325,20 @@ Authorization: MediaBrowser Token="api_key", Client="JellyStream", Device="Jelly
 ### User ID Auto-Detection
 If `JELLYFIN_USER_ID` not set → calls `/Users` → uses first user's Id automatically.
 
+### TunerHost Registration
+Jellyfin requires `"Id": ""` and `"Source": ""` as explicit empty strings in the
+POST payload to `/LiveTv/TunerHosts` — omitting them causes a 500 deserialization error.
+
+### Global vs Per-Channel Registration
+One tuner pointing to `m3u/all` covers all channels. New channels appear automatically
+in Jellyfin without re-registration. The `register-livetv` endpoint cleans up any
+existing `tuner_host_id` / `listing_provider_id` before creating new ones.
+
 ### JellyfinClient Methods (`app/integrations/jellyfin.py`)
 - `ensure_user_id()` — Auto-detect and cache user ID
 - `get_current_user()` — First user info
 - `get_libraries()` — All user views
-- `get_library_items(parent_id, recursive, limit, start_index, sort_by, sort_order, include_item_types)` — Paginated/sorted items
+- `get_library_items(...)` — Paginated/sorted items
 - `get_item_info(item_id)` — Item metadata
 - `get_stream_url(item_id)` — `{base_url}/Videos/{item_id}/stream?api_key={key}`
 - `register_tuner_host(url, friendly_name, ...)` — Register M3U tuner in Jellyfin Live TV
@@ -304,16 +350,22 @@ If `JELLYFIN_USER_ID` not set → calls `/Users` → uses first user's Id automa
 
 ```env
 JELLYFIN_URL=http://your-server:8096
-JELLYFIN_API_KEY=your-api-key
-JELLYFIN_USER_ID=          # Optional, auto-detected
+JELLYFIN_API_KEY=your-api-key          # Admin key recommended (needed for Path field)
+JELLYFIN_USER_ID=                      # Optional, auto-detected
 JELLYFIN_CLIENT_NAME=JellyStream
 JELLYFIN_DEVICE_NAME=JellyStream Server
-JELLYFIN_DEVICE_ID=        # Optional, auto-generated
-JELLYFIN_DEFAULT_PAGE_SIZE=50
-JELLYFIN_MAX_PAGE_SIZE=1000
+JELLYFIN_DEVICE_ID=                    # Optional, auto-generated
 
 HOST=0.0.0.0
 PORT=8000
+
+# Must be a network-accessible IP — Jellyfin fetches M3U/XMLTV from this address.
+# Using localhost will cause Jellyfin registration to fail.
+JELLYSTREAM_PUBLIC_URL=http://192.168.1.100:8000
+
+# Path prefix rewrite: /jellyfin/prefix:/local/prefix
+# Leave blank when JellyStream and Jellyfin share the same mount point.
+MEDIA_PATH_MAP=
 
 LOG_LEVEL=INFO
 LOG_TO_FILE=true
@@ -331,8 +383,9 @@ SCHEDULER_ENABLED=true
 
 ### API Contract
 - **All POST/PUT** send `Content-Type: application/json` with `JSON.stringify(data)` body
-- **Never use** `URLSearchParams` as body for POST/PUT (old bug — already fixed)
+- **Never use** `URLSearchParams` as body for POST/PUT
 - `api_client.php` correctly sends `json_encode($data)` as body
+- `healthCheck()` calls `/health` (root), not `/api/health` — strips `/api` suffix from base URL
 
 ### Port Configuration (`config/ports.php`)
 - `API_BASE_URL` must NOT use hardcoded IPs
@@ -349,30 +402,26 @@ SCHEDULER_ENABLED=true
   - Library multi-select (add multiple Jellyfin libraries)
   - Genre filter list (genre name + content type)
   - Schedule type toggle (Manual vs Auto/Genre)
-  - Schedule timeline view
+  - Regenerate Schedule button (`reset=true` — wipes and rebuilds from now)
+  - Register/Unregister with Jellyfin Live TV
+  - Localhost warning banner when public URL resolves to local address
 - `setup.php` — Config wizard (writes `.env`)
 
 ## Current Status
 
-### ✅ Completed / Stable
-- FastAPI application structure
-- Jellyfin client with proper auth, user ID auto-detection
-- Hierarchical content browsing (Series → Season → Episode)
-- Pagination and sorting parameters
-- M3U and XMLTV format generation logic
-- APScheduler dependency installed
-- Logging infrastructure (file + console, rotation)
-- PHP frontend base structure
-
-### 🔧 In Progress (Phase 1)
-- Redesign data model (Channel, ChannelLibrary, GenreFilter, ScheduleEntry)
-- Fix all POST/PUT to use Pydantic JSON body
-- Build `schedule_generator.py` service
-- Build `stream_proxy.py` with ffmpeg
-- Integrate APScheduler
-- Add logging to all modules
-- Fix livetv.py route ordering bug
-- Update PHP for multi-library channel creation + genre filters
+### ✅ Phase 1 Complete
+- Channel model with multi-library + genre filter support
+- Genre-based auto-schedule generation (7-day fill, daily APScheduler extension)
+- ffmpeg stream proxy: H.264 1080p / AAC stereo, time-offset seeking
+- Direct file access (faster seek), HTTP fallback
+- Kodi `.nfo` + `.jpg` sidecar parsing → stored in `ScheduleEntry`
+- XMLTV enriched with `<desc>`, `<icon>`, `<date>`, `<rating>`
+- Thumbnail serving endpoint (`/api/livetv/thumbnail/{entry_id}`)
+- HEAD probe endpoint for Jellyfin stream compatibility
+- M3U uses `tvg-chno` (correct Jellyfin channel number attribute)
+- One-click Jellyfin Live TV registration (global M3U + XMLTV)
+- `JELLYSTREAM_PUBLIC_URL` used in all M3U stream + XMLTV icon URLs
+- Logging in all modules
 
 ### 🚧 Planned (Phase 2+)
 - Full web UI with templates and consistent layout
@@ -381,31 +430,49 @@ SCHEDULER_ENABLED=true
 - Filler content: commercials, bumpers, static image, next-show-immediate
 - Channel logo watermark (ffmpeg overlay)
 - Holiday schedules by date
-- Jellyfin Live TV auto-registration from UI
 - Multi-stream dashboard
 - User authentication
 
 ## Known Issues / Design Decisions
 
-### Route Ordering Bug (Fixed in Phase 1)
-FastAPI matches routes in registration order. In `livetv.py`, `/m3u/{channel_id}` was registered before `/m3u/all`, causing `/m3u/all` to be intercepted as `/m3u/{channel_id=all}`.
-**Fix**: Always register `/all` literal routes BEFORE `/{id}` parameterized routes.
+### Route Ordering
+FastAPI matches routes in registration order. Always register `/all` literal routes
+BEFORE `/{id}` parameterised routes in `livetv.py` or "all" matches as an integer.
 
 ### ffmpeg Stream Proxy
-The live stream endpoint (`/api/livetv/stream/{channel_id}`) proxies video through ffmpeg:
-```bash
-ffmpeg -ss {offset_seconds} -i {jellyfin_url} -c copy -f mpegts pipe:1
 ```
-- `-ss` before `-i` = fast seek (input seek, not frame-accurate but low latency)
-- `-c copy` = no transcoding by default (use `-c:v libx264 -c:a aac` for transcoding)
-- `-f mpegts` = MPEG-TS container suitable for streaming
+ffmpeg -ss {offset} -probesize 262144 -analyzeduration 1000000 -fflags nobuffer
+       -i {source}
+       -vf scale=-2:min(1080,ih) -c:v libx264 -preset veryfast -tune zerolatency
+       -crf 20 -maxrate 8000k -bufsize 4000k
+       -c:a aac -b:a 192k -ac 2
+       -f mpegts pipe:1
+```
+- `-ss` before `-i` = fast input seek
+- `-probesize 262144` + `-analyzeduration 1000000` = reduced startup delay
+- `-tune zerolatency` = minimises encoder buffering
+- H.264 + AAC ensures broad client compatibility (Jellyfin, Android TV, VLC)
 
-### Schedule Generation
-- Jellyfin genre filter: `GET /Users/{userId}/Items?Genres={genre}&Recursive=true`
-- Items are fetched for each library separately then merged
-- Schedule fills sequentially from `schedule_generated_through` with no gaps
-- For TV shows: cycles through seasons/episodes in order
-- For Movies: shuffles to avoid repetition
+### HTTP Header Encoding
+Starlette encodes response headers as latin-1. Titles with non-ASCII characters
+(e.g. en-dash `–`) must be ASCII-encoded before use in `X-Entry-Title` header:
+```python
+entry.title.encode("ascii", errors="replace").decode("ascii")
+```
+
+### Schedule Generation Items Endpoint
+Uses `/Items` (admin endpoint) instead of `/Users/{id}/Items` so that the `Path`
+field is returned regardless of the configured user's permission level.
+
+### Jellyfin EPG Refresh
+The "Refresh Guide Data" button on the guide page processes cached data.
+To force an actual re-download: Dashboard → Scheduled Tasks → **Refresh Guide** → Run.
+XMLTV responses include `Cache-Control: no-cache` headers.
+
+### Schedule Reset vs Append
+`generate-schedule?reset=true` deletes all existing entries before generating.
+Without `reset`, new entries are appended from `schedule_generated_through`.
+The UI "Regenerate Schedule" button always passes `reset=true`.
 
 ## Development Environment
 
@@ -428,17 +495,6 @@ python run.py
 # XMLTV: http://localhost:8000/api/livetv/xmltv/all
 ```
 
-## Useful Commands
-
-```bash
-make setup          # Run setup.sh
-make run            # Start application
-./start.sh          # Quick start with venv
-make test           # Run tests
-make docker-build   # Build Docker image
-make docker-run     # Run in Docker
-```
-
 ## References
 
 - [Jellyfin API Documentation](https://api.jellyfin.org/)
@@ -452,6 +508,6 @@ make docker-run     # Run in Docker
 
 ---
 
-*Last Updated: 2026-02-21*
-*Version: 0.3.0*
-*Status: Active Development — Phase 1 architectural redesign in progress*
+*Last Updated: 2026-02-22*
+*Version: 0.4.0*
+*Status: Phase 1 complete — Phase 2 planning*

@@ -31,6 +31,26 @@ class Settings(BaseSettings):
     JELLYFIN_DEFAULT_PAGE_SIZE: int = 50  # Default items per page
     JELLYFIN_MAX_PAGE_SIZE: int = 1000  # Maximum items per page
 
+    # JellyStream network
+    # The base URL Jellyfin (and other clients) use to reach THIS JellyStream
+    # instance — must be a network-accessible IP, NOT localhost.
+    # Example: http://192.168.1.100:8000
+    JELLYSTREAM_PUBLIC_URL: str = ""
+
+    # Stream proxy
+    # ISO 639-2 language code for preferred audio track selection.
+    # Examples: eng (English), fre (French), spa (Spanish), jpn (Japanese)
+    # JellyStream will use ffprobe to find a matching track; falls back to the
+    # first audio track if the preferred language is not present.
+    PREFERRED_AUDIO_LANGUAGE: str = "eng"
+
+    # Media path mapping for direct file access.
+    # Maps the path prefix Jellyfin reports to the path where the same
+    # files are accessible on THIS machine.
+    # Format: "/jellyfin/prefix:/local/prefix"
+    # Example: "/media:/mnt/nas/media" or leave blank if same machine.
+    MEDIA_PATH_MAP: str = ""
+
     # Paths
     COMMERCIALS_PATH: str = "./data/commercials"
     LOGOS_PATH: str = "./data/logos"

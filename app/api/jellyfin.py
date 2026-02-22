@@ -58,6 +58,32 @@ async def get_libraries():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/genres/{library_id}")
+async def get_library_genres(library_id: str):
+    """
+    Return genres that exist in a specific Jellyfin library.
+
+    Uses /Genres?parentId={library_id} so only genres actually present in
+    that library are returned — prevents the user typing a genre that doesn't exist.
+    """
+    if not settings.JELLYFIN_URL or not settings.JELLYFIN_API_KEY:
+        raise HTTPException(status_code=400, detail="Jellyfin not configured")
+
+    client = JellyfinClient(
+        base_url=settings.JELLYFIN_URL,
+        api_key=settings.JELLYFIN_API_KEY,
+        user_id=settings.JELLYFIN_USER_ID or None,
+        client_name=settings.JELLYFIN_CLIENT_NAME,
+        device_name=settings.JELLYFIN_DEVICE_NAME,
+        device_id=settings.JELLYFIN_DEVICE_ID or None,
+    )
+    try:
+        genres = await client.get_genres(library_id)
+        return {"genres": genres}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/items/{parent_id}")
 async def get_library_items(
     parent_id: str,

@@ -91,10 +91,12 @@ class ApiClient {
     }
 
     /**
-     * Get health status
+     * Get health status.
+     * Health endpoint lives at the application root (/health), not under /api.
      */
     public function healthCheck() {
-        return $this->get('/health');
+        $root = preg_replace('#/api/?$#', '', rtrim($this->base_url, '/'));
+        return $this->request('GET', $root . '/health');
     }
 
     /**

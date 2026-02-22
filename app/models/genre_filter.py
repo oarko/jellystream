@@ -23,4 +23,5 @@ class GenreFilter(Base):
         index=True
     )
     genre = Column(String(100), nullable=False)    # e.g. "Sci-Fi", "Horror", "Action"
-    content_type = Column(String(20), default="both")  # "movie" | "episode" | "both"
+    content_type = Column(String(20), default="both")   # "movie" | "episode" | "both"
+    filter_type = Column(String(10), default="include")  # "include" | "exclude"

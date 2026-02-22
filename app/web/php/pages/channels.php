@@ -58,7 +58,10 @@ $channels = $response['success'] ? ($response['data'] ?? []) : [];
 <div class="container">
     <div class="header">
         <h1>📺 Channels</h1>
-        <a href="channel_edit.php" class="btn btn-primary">+ New Channel</a>
+        <div style="display:flex;gap:8px;">
+            <a href="../index.php" class="btn btn-secondary">← Dashboard</a>
+            <a href="channel_edit.php" class="btn btn-primary">+ New Channel</a>
+        </div>
     </div>
 
     <?php if (isset($_GET['generated'])): ?>

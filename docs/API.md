@@ -3,598 +3,480 @@
 ## Base URL
 
 ```
-http://localhost:8000
+http://<host>:8000
 ```
 
-## API Routing Structure
+Set `JELLYSTREAM_PUBLIC_URL` in `.env` to the network-accessible address
+(e.g. `http://192.168.1.100:8000`). All M3U stream URLs and XMLTV thumbnail
+URLs use this value so Jellyfin can reach JellyStream from a different machine.
 
-The API uses a prefix-based routing system:
-- Main application routes: `/api/*`
-- Router prefixes combine with the main prefix
-- Example: streams router with prefix `/streams` → `/api/streams/`
+## Notes
 
-All API endpoints below assume the `/api` prefix is already included.
+- All `POST` / `PUT` endpoints accept **JSON body** (`Content-Type: application/json`).
+- Legacy routes at `/api/streams/` and `/api/schedules/` (v1) are kept for backward
+  compatibility but should not be used in new integrations.
+- Interactive Swagger UI: `GET /docs`
 
-## Authentication
+---
 
-Currently, the API does not require authentication. This may change in future versions.
-
-## Endpoints
+## Application
 
 ### Health Check
 
 **GET** `/health`
 
-Returns the health status of the application.
-
-**Response:**
 ```json
 {
-  "status": "healthy"
+  "status": "healthy",
+  "public_url": "http://192.168.1.100:8000"
 }
 ```
 
+`public_url` is `null` when `JELLYSTREAM_PUBLIC_URL` is not configured.
+
 ---
 
-### Streams
+## Channels  `/api/channels/`
 
-Streams represent virtual TV channels that combine Jellyfin media content with scheduling.
+Channels are virtual TV channels. Each channel has one or more Jellyfin libraries
+and optional genre filters that drive automatic schedule generation.
 
-#### Get All Streams
+### List channels
 
-**GET** `/api/streams/`
+**GET** `/api/channels/`
 
-Returns a list of all configured streams.
-
-**Response:**
 ```json
 [
   {
     "id": 1,
-    "name": "Classic Movies",
-    "description": "24/7 classic movie channel",
-    "jellyfin_library_id": "abc123",
-    "stream_url": "http://localhost:8000/api/livetv/stream/1",
-    "enabled": true,
-    "tuner_host_id": "tuner-abc123",
-    "listing_provider_id": "provider-xyz789",
+    "name": "Action Movies",
+    "description": "Non-stop action",
     "channel_number": "100.1",
-    "created_at": "2024-01-01T00:00:00",
-    "updated_at": "2024-01-01T00:00:00"
+    "enabled": true,
+    "schedule_type": "genre_auto",
+    "schedule_generated_through": "2026-03-01T02:00:00",
+    "created_at": "2026-02-01T00:00:00",
+    "updated_at": "2026-02-01T00:00:00"
   }
 ]
 ```
 
-#### Get Stream by ID
+### Get channel
 
-**GET** `/api/streams/{stream_id}`
+**GET** `/api/channels/{id}`
 
-Returns details for a specific stream.
+Returns channel with its libraries and genre filters.
 
-**Parameters:**
-- `stream_id` (path): Stream ID
-
-**Response:**
 ```json
 {
   "id": 1,
-  "name": "Classic Movies",
-  "description": "24/7 classic movie channel",
-  "jellyfin_library_id": "abc123",
-  "stream_url": "http://localhost:8000/api/livetv/stream/1",
-  "enabled": true,
-  "tuner_host_id": "tuner-abc123",
-  "listing_provider_id": "provider-xyz789",
+  "name": "Action Movies",
   "channel_number": "100.1",
-  "created_at": "2024-01-01T00:00:00",
-  "updated_at": "2024-01-01T00:00:00"
-}
-```
-
-#### Create Stream
-
-**POST** `/api/streams/`
-
-Creates a new stream.
-
-**Request Parameters:**
-- `name` (required): Stream name
-- `jellyfin_library_id` (required): Jellyfin library ID
-- `description` (optional): Stream description
-- `channel_number` (optional): Virtual channel number (e.g., "100.1")
-
-**Response:**
-```json
-{
-  "id": 1,
-  "message": "Stream created successfully"
-}
-```
-
-#### Update Stream
-
-**PUT** `/api/streams/{stream_id}`
-
-Updates an existing stream.
-
-**Parameters:**
-- `stream_id` (path): Stream ID
-- `name` (optional): New stream name
-- `jellyfin_library_id` (optional): New Jellyfin library ID
-- `description` (optional): New description
-- `enabled` (optional): Enable/disable stream
-- `channel_number` (optional): Virtual channel number
-- `tuner_host_id` (optional): Jellyfin TunerHost ID
-- `listing_provider_id` (optional): Jellyfin ListingProvider ID
-
-**Response:**
-```json
-{
-  "id": 1,
-  "message": "Stream updated successfully"
-}
-```
-
-#### Delete Stream
-
-**DELETE** `/api/streams/{stream_id}`
-
-Deletes a stream.
-
-**Parameters:**
-- `stream_id` (path): Stream ID
-
-**Response:**
-```json
-{
-  "message": "Stream deleted successfully"
-}
-```
-
----
-
-### Schedules
-
-Schedules define what media content plays on a stream at specific times.
-
-#### Get All Schedules
-
-**GET** `/api/schedules/`
-
-Returns all scheduled items across all streams.
-
-**Response:**
-```json
-[
-  {
-    "id": 1,
-    "stream_id": 1,
-    "title": "The Godfather",
-    "media_item_id": "xyz789",
-    "scheduled_time": "2024-01-01T20:00:00",
-    "duration": 10500,
-    "extra_metadata": "{\"type\":\"Movie\",\"year\":1972}",
-    "created_at": "2024-01-01T00:00:00"
-  }
-]
-```
-
-#### Get Schedule by ID
-
-**GET** `/api/schedules/{schedule_id}`
-
-Returns details for a specific schedule.
-
-**Parameters:**
-- `schedule_id` (path): Schedule ID
-
-**Response:**
-```json
-{
-  "id": 1,
-  "stream_id": 1,
-  "title": "The Godfather",
-  "media_item_id": "xyz789",
-  "scheduled_time": "2024-01-01T20:00:00",
-  "duration": 10500,
-  "extra_metadata": "{\"type\":\"Movie\",\"year\":1972}",
-  "created_at": "2024-01-01T00:00:00"
-}
-```
-
-#### Get Schedules for Stream
-
-**GET** `/api/schedules/stream/{stream_id}`
-
-Returns all schedules for a specific stream, ordered by scheduled time.
-
-**Parameters:**
-- `stream_id` (path): Stream ID
-
-**Response:**
-```json
-[
-  {
-    "id": 1,
-    "stream_id": 1,
-    "title": "The Godfather",
-    "media_item_id": "xyz789",
-    "scheduled_time": "2024-01-01T20:00:00",
-    "duration": 10500,
-    "extra_metadata": "{\"type\":\"Movie\",\"year\":1972}",
-    "created_at": "2024-01-01T00:00:00"
-  }
-]
-```
-
-#### Create Schedule
-
-**POST** `/api/schedules/`
-
-Creates a new schedule entry.
-
-**Request Parameters:**
-- `stream_id` (required): Stream ID
-- `title` (required): Schedule title/name
-- `media_item_id` (required): Jellyfin media item ID
-- `scheduled_time` (required): ISO 8601 datetime string
-- `duration` (required): Duration in seconds
-- `metadata` (optional): JSON string with extra metadata
-
-**Response:**
-```json
-{
-  "id": 1,
-  "message": "Schedule created successfully"
-}
-```
-
-#### Update Schedule
-
-**PUT** `/api/schedules/{schedule_id}`
-
-Updates an existing schedule entry.
-
-**Parameters:**
-- `schedule_id` (path): Schedule ID
-- `title` (optional): New title
-- `media_item_id` (optional): New media item ID
-- `scheduled_time` (optional): New scheduled time (ISO 8601)
-- `duration` (optional): New duration in seconds
-- `metadata` (optional): New metadata JSON string
-
-**Response:**
-```json
-{
-  "id": 1,
-  "message": "Schedule updated successfully"
-}
-```
-
-#### Delete Schedule
-
-**DELETE** `/api/schedules/{schedule_id}`
-
-Deletes a schedule entry.
-
-**Parameters:**
-- `schedule_id` (path): Schedule ID
-
-**Response:**
-```json
-{
-  "message": "Schedule deleted successfully"
-}
-```
-
----
-
-### Jellyfin Integration
-
-Integration with Jellyfin media server for browsing libraries and retrieving media content.
-
-#### Get Current User
-
-**GET** `/api/jellyfin/users`
-
-Returns the current Jellyfin user information. Used for auto-detecting user ID.
-
-**Response:**
-```json
-{
-  "user": {
-    "Id": "user123",
-    "Name": "JellyStream User",
-    "ServerId": "server456"
-  }
-}
-```
-
-#### Get Libraries
-
-**GET** `/api/jellyfin/libraries`
-
-Returns all available Jellyfin libraries (views) for the configured user.
-
-**Response:**
-```json
-{
+  "enabled": true,
+  "schedule_type": "genre_auto",
   "libraries": [
-    {
-      "Id": "abc123",
-      "Name": "Movies",
-      "CollectionType": "movies"
-    },
-    {
-      "Id": "def456",
-      "Name": "TV Shows",
-      "CollectionType": "tvshows"
-    }
+    { "library_id": "abc123", "library_name": "Movies", "collection_type": "movies" }
+  ],
+  "genre_filters": [
+    { "genre": "Action", "content_type": "both" }
   ]
 }
 ```
 
-#### Get Library Items
+### Create channel
+
+**POST** `/api/channels/`
+
+```json
+{
+  "name": "Action Movies",
+  "description": "Non-stop action",
+  "channel_number": "100.1",
+  "schedule_type": "genre_auto",
+  "libraries": [
+    { "library_id": "abc123", "library_name": "Movies", "collection_type": "movies" }
+  ],
+  "genre_filters": [
+    { "genre": "Action", "content_type": "both" },
+    { "genre": "Thriller", "content_type": "movie" }
+  ]
+}
+```
+
+`schedule_type`: `"genre_auto"` (default) or `"manual"`.
+`content_type` in genre filters: `"movie"`, `"episode"`, or `"both"`.
+
+On creation, a 7-day schedule is automatically generated if `schedule_type` is `"genre_auto"`.
+
+### Update channel
+
+**PUT** `/api/channels/{id}`
+
+All fields optional. Supplying `libraries` or `genre_filters` replaces the
+existing lists entirely.
+
+```json
+{
+  "name": "Updated Name",
+  "enabled": false,
+  "libraries": [...],
+  "genre_filters": [...]
+}
+```
+
+### Delete channel
+
+**DELETE** `/api/channels/{id}`
+
+Cascades to all `channel_libraries`, `genre_filters`, and `schedule_entries`.
+
+### Generate schedule
+
+**POST** `/api/channels/{id}/generate-schedule?days=7&reset=true`
+
+| Query param | Default | Description |
+|---|---|---|
+| `days` | `7` | Number of days to generate |
+| `reset` | `false` | If `true`, delete all existing entries first and start from now |
+
+```json
+{ "message": "Schedule generated: 142 entries created", "count": 142 }
+```
+
+### Register with Jellyfin Live TV
+
+**POST** `/api/channels/{id}/register-livetv`
+
+Registers JellyStream's global M3U and XMLTV endpoints as a TunerHost and
+ListingProvider in Jellyfin. Any existing registrations on this channel are
+cleaned up first to prevent duplicates.
+
+**Request body:**
+```json
+{
+  "public_url": "http://192.168.1.100:8000"
+}
+```
+
+`public_url` must be a network-accessible address that Jellyfin can reach.
+Using `localhost` will cause Jellyfin's registration to fail.
+
+**Response:**
+```json
+{
+  "message": "Registered with Jellyfin Live TV",
+  "tuner_host_id": "abc123",
+  "listing_provider_id": "xyz789"
+}
+```
+
+### Unregister from Jellyfin Live TV
+
+**POST** `/api/channels/{id}/unregister-livetv`
+
+Removes the TunerHost and ListingProvider registrations from Jellyfin.
+
+---
+
+## Schedules  `/api/schedules/`
+
+### Get channel schedule
+
+**GET** `/api/schedules/channel/{channel_id}?start=ISO&end=ISO`
+
+Returns schedule entries in a time window. Defaults to 3 hours back → 7 days forward.
+
+```json
+[
+  {
+    "id": 1001,
+    "channel_id": 1,
+    "title": "The Matrix",
+    "series_name": null,
+    "season_number": null,
+    "episode_number": null,
+    "media_item_id": "abc123",
+    "item_type": "Movie",
+    "genres": "[\"Action\", \"Science Fiction\"]",
+    "start_time": "2026-02-22T19:00:00",
+    "end_time": "2026-02-22T21:16:00",
+    "duration": 8160,
+    "description": "A computer hacker learns...",
+    "content_rating": "R",
+    "air_date": "1999-03-31",
+    "thumbnail_path": "/mnt/media/Movies/The Matrix/The Matrix.jpg"
+  }
+]
+```
+
+### What's playing now
+
+**GET** `/api/schedules/channel/{channel_id}/now`
+
+Returns the single entry currently airing, or `null`.
+
+### Create manual entry
+
+**POST** `/api/schedules/`
+
+```json
+{
+  "channel_id": 1,
+  "title": "Special Event",
+  "media_item_id": "abc123",
+  "library_id": "lib456",
+  "item_type": "Movie",
+  "start_time": "2026-03-01T20:00:00",
+  "duration": 7200
+}
+```
+
+### Delete entry
+
+**DELETE** `/api/schedules/{id}`
+
+---
+
+## Jellyfin Integration  `/api/jellyfin/`
+
+### Get current user
+
+**GET** `/api/jellyfin/users`
+
+```json
+{ "user": { "Id": "user123", "Name": "Admin", "ServerId": "server456" } }
+```
+
+### Get libraries
+
+**GET** `/api/jellyfin/libraries`
+
+```json
+{
+  "libraries": [
+    { "Id": "abc123", "Name": "Movies", "CollectionType": "movies" },
+    { "Id": "def456", "Name": "Anime", "CollectionType": "tvshows" }
+  ]
+}
+```
+
+### Get library items
 
 **GET** `/api/jellyfin/items/{parent_id}`
 
-Returns items from a specific Jellyfin library or container with pagination and sorting support.
+| Query param | Default | Description |
+|---|---|---|
+| `recursive` | `false` | Recurse into subfolders |
+| `limit` | `50` | Items per page |
+| `start_index` | `0` | Pagination offset |
+| `sort_by` | `SortName` | Sort field |
+| `sort_order` | `Ascending` | `Ascending` or `Descending` |
+| `include_item_types` | — | Comma-separated types (e.g. `Series,Episode`) |
 
-**Parameters:**
-- `parent_id` (path): Parent library or container ID
-- `recursive` (query, optional): If true, returns all descendants. Default: false (single level)
-- `limit` (query, optional): Number of items per page. Default: 50
-- `start_index` (query, optional): Starting index for pagination. Default: 0
-- `sort_by` (query, optional): Sort field. Default: "SortName"
-  - Available options: SortName, PremiereDate, DateCreated, CommunityRating, Runtime, PlayCount, Random, and more
-- `sort_order` (query, optional): Sort direction. Options: Ascending, Descending. Default: "Ascending"
-- `include_item_types` (query, optional): Filter by item types (comma-separated). Example: "Series,Season,Episode"
-
-**Example Request:**
-```
-GET /api/jellyfin/items/abc123?recursive=false&limit=50&start_index=0&sort_by=SortName&sort_order=Ascending
-```
-
-**Response:**
-```json
-{
-  "Items": [
-    {
-      "Id": "xyz789",
-      "Name": "The Godfather",
-      "Type": "Movie",
-      "RunTimeTicks": 105000000000,
-      "PremiereDate": "1972-03-24",
-      "CommunityRating": 9.2
-    },
-    {
-      "Id": "series123",
-      "Name": "Breaking Bad",
-      "Type": "Series",
-      "ChildCount": 5
-    }
-  ],
-  "TotalRecordCount": 150,
-  "StartIndex": 0
-}
-```
-
-**Hierarchical Navigation (TV Shows):**
-
-For `CollectionType: "tvshows"` libraries, navigate hierarchically:
-1. Library → Series (recursive=false)
-2. Series → Seasons (use Series ID as parent_id, recursive=false)
-3. Season → Episodes (use Season ID as parent_id, recursive=false)
+**Hierarchical navigation for TV shows:**
+1. Library → Series (`recursive=false`)
+2. Series → Seasons (Series ID as parent)
+3. Season → Episodes (Season ID as parent)
 
 ---
 
-### Live TV Integration
+## Live TV  `/api/livetv/`
 
-JellyStream integrates with Jellyfin's Live TV system by generating M3U playlists and XMLTV EPG data.
+> **Route ordering:** `/m3u/all` and `/xmltv/all` are registered *before*
+> `/{channel_id}` variants to prevent FastAPI matching `"all"` as an integer.
 
-#### Get Stream M3U Playlist
-
-**GET** `/api/livetv/m3u/{stream_id}`
-
-Generates an M3U playlist for a specific stream.
-
-**Parameters:**
-- `stream_id` (path): Stream ID
-
-**Response (Content-Type: application/x-mpegURL):**
-```m3u
-#EXTM3U
-#EXTINF:-1 channel-id="1" channel-number="100.1" tvg-name="Classic Movies" tvg-id="1" group-title="JellyStream",100.1 Classic Movies
-http://localhost:8000/api/livetv/stream/1
-```
-
-#### Get All Streams M3U Playlist
+### M3U playlist — all channels
 
 **GET** `/api/livetv/m3u/all`
 
-Generates an M3U playlist containing all enabled streams.
-
-**Response (Content-Type: application/x-mpegURL):**
 ```m3u
 #EXTM3U
-#EXTINF:-1 channel-id="1" channel-number="100.1" tvg-name="Classic Movies" tvg-id="1" group-title="JellyStream",100.1 Classic Movies
-http://localhost:8000/api/livetv/stream/1
-#EXTINF:-1 channel-id="2" channel-number="100.2" tvg-name="TV Marathon" tvg-id="2" group-title="JellyStream",100.2 TV Marathon
-http://localhost:8000/api/livetv/stream/2
+#EXTINF:-1 tvg-id="1" tvg-name="Action Movies" tvg-chno="100.1" group-title="JellyStream",100.1 Action Movies
+http://192.168.1.100:8000/api/livetv/stream/1
 ```
 
-#### Get Stream XMLTV EPG
+Uses `tvg-chno` (not `channel-number`) which Jellyfin reads for channel numbering.
 
-**GET** `/api/livetv/xmltv/{stream_id}`
+### M3U playlist — single channel
 
-Generates XMLTV Electronic Program Guide data for a specific stream.
+**GET** `/api/livetv/m3u/{channel_id}`
 
-**Parameters:**
-- `stream_id` (path): Stream ID
-
-**Response (Content-Type: application/xml):**
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE tv SYSTEM "xmltv.dtd">
-<tv generator-info-name="JellyStream">
-  <channel id="1">
-    <display-name>Classic Movies</display-name>
-  </channel>
-  <programme channel="1" start="20240101200000 +0000" stop="20240101225500 +0000">
-    <title>The Godfather</title>
-    <category>Movie</category>
-  </programme>
-</tv>
-```
-
-#### Get All Streams XMLTV EPG
+### XMLTV EPG — all channels
 
 **GET** `/api/livetv/xmltv/all`
 
-Generates XMLTV EPG data for all enabled streams.
+EPG window: 3 hours back → 7 days forward. Enriched with sidecar metadata when available.
 
-**Response (Content-Type: application/xml):**
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE tv SYSTEM "xmltv.dtd">
 <tv generator-info-name="JellyStream">
   <channel id="1">
-    <display-name>Classic Movies</display-name>
+    <display-name>Action Movies</display-name>
   </channel>
-  <channel id="2">
-    <display-name>TV Marathon</display-name>
-  </channel>
-  <programme channel="1" start="20240101200000 +0000" stop="20240101225500 +0000">
-    <title>The Godfather</title>
+  <programme channel="1" start="20260222190000 +0000" stop="20260222211600 +0000">
+    <title>The Matrix</title>
+    <desc lang="en">A computer hacker learns from mysterious rebels...</desc>
+    <icon src="http://192.168.1.100:8000/api/livetv/thumbnail/1001"/>
+    <date>19990331</date>
     <category>Movie</category>
-  </programme>
-  <programme channel="2" start="20240101200000 +0000" stop="20240101203000 +0000">
-    <title>Breaking Bad - Pilot</title>
-    <sub-title>Breaking Bad</sub-title>
-    <category>Episode</category>
+    <category>Action</category>
+    <rating system="MPAA"><value>R</value></rating>
   </programme>
 </tv>
 ```
 
-#### Stream Live Content
+Response includes `Cache-Control: no-cache` headers so Jellyfin always fetches fresh data.
 
-**GET** `/api/livetv/stream/{stream_id}`
+### XMLTV EPG — single channel
 
-Streams live content based on the current schedule. This endpoint:
-1. Checks the current time
-2. Finds what media should be playing now
-3. Redirects to the actual Jellyfin stream URL
+**GET** `/api/livetv/xmltv/{channel_id}`
 
-**Parameters:**
-- `stream_id` (path): Stream ID
+### Thumbnail
 
-**Response:**
-- **302 Redirect** to Jellyfin stream URL
-- **404 Not Found** if no content is scheduled at the current time
+**GET** `/api/livetv/thumbnail/{entry_id}`
 
-**Example Usage:**
+Serves the `.jpg` sidecar image for a schedule entry (read from `thumbnail_path`).
+Returns 404 if no thumbnail is available or the file is not on disk.
 
-This endpoint is typically consumed by M3U playlists and is used as the stream URL in Jellyfin's TunerHost configuration.
+### Stream (HEAD probe)
+
+**HEAD** `/api/livetv/stream/{channel_id}`
+
+Returns `200` with `Content-Type: video/mp2t` without starting ffmpeg.
+Jellyfin probes streams this way before opening them.
+
+### Stream (GET)
+
+**GET** `/api/livetv/stream/{channel_id}`
+
+Proxies the current schedule item through ffmpeg at the correct time offset so
+the viewer always joins mid-programme — just like real broadcast TV.
+
+1. Finds the `ScheduleEntry` spanning `now` (`start_time ≤ now < end_time`)
+2. Calculates `offset = now − start_time` in seconds
+3. Prefers direct file access (`file_path`) for near-instant seek; falls back to Jellyfin HTTP stream
+4. Runs:
+   ```
+   ffmpeg -ss {offset} -probesize 262144 -analyzeduration 1000000 -fflags nobuffer
+          -i {source}
+          -vf scale=-2:min(1080,ih) -c:v libx264 -preset veryfast -tune zerolatency
+          -crf 20 -maxrate 8000k -bufsize 4000k
+          -c:a aac -b:a 192k -ac 2
+          -f mpegts -loglevel warning pipe:1
+   ```
+5. Returns `StreamingResponse` (`video/mp2t`) wrapping ffmpeg stdout
+
+**Response headers:**
+- `X-Channel-Id` — channel ID
+- `X-Entry-Title` — ASCII-sanitised title
+- `X-Offset-Seconds` — seek offset applied
+
+**Errors:**
+- `404` — nothing scheduled right now
+- `503` — ffmpeg not installed
 
 ---
 
-## Integration with Jellyfin Live TV
+## Sidecar Metadata
 
-To register JellyStream as a Live TV source in Jellyfin:
+JellyStream reads Kodi/Jellyfin standard sidecar files placed next to each video:
 
-### Step 1: Add TunerHost
+| File | Content |
+|---|---|
+| `<basename>.nfo` | Kodi XML with `<plot>`, `<mpaa>`, `<aired>` |
+| `<basename>.jpg` | Preview thumbnail |
+| `<basename>-thumb.jpg` | Alternative thumbnail name |
 
-**POST** to Jellyfin: `/LiveTv/TunerHosts`
+These are read at **schedule generation time** and stored in `schedule_entries`.
+The data appears in the XMLTV guide (`<desc>`, `<icon>`, `<date>`, `<rating>`).
 
-```json
-{
-  "Type": "m3utuner",
-  "Url": "http://localhost:8000/api/livetv/m3u/all",
-  "UserAgent": "JellyStream",
-  "FriendlyName": "JellyStream Virtual Tuner",
-  "ImportFavoritesOnly": false,
-  "AllowHWTranscoding": true,
-  "EnableStreamLooping": false,
-  "Source": "Other",
-  "TunerCount": 10,
-  "DeviceId": "jellystream-tuner"
-}
+No path mapping is needed when JellyStream and Jellyfin share the same mount point
+(e.g. both access media at `/mnt/media`). Use `MEDIA_PATH_MAP` in `.env` when the
+paths differ between machines:
+
+```env
+# Format: /jellyfin/prefix:/local/prefix
+MEDIA_PATH_MAP=/media:/mnt/nas/media
 ```
 
-### Step 2: Add ListingProvider
+---
 
-**POST** to Jellyfin: `/LiveTv/ListingProviders`
+## Jellyfin Live TV Setup
 
-```json
-{
-  "Type": "xmltv",
-  "Path": "http://localhost:8000/api/livetv/xmltv/all",
-  "ListingsId": "jellystream-epg"
-}
+JellyStream registers one global tuner and one EPG provider covering all channels.
+New channels appear automatically in Jellyfin without re-registration.
+
+### Via UI
+
+1. Open a channel in the JellyStream web interface
+2. Fill in **Public URL** (the network IP:port Jellyfin can reach)
+3. Click **Register with Jellyfin Live TV**
+
+### Via API (manual)
+
+```bash
+# Register tuner
+POST /api/channels/{id}/register-livetv
+{ "public_url": "http://192.168.1.100:8000" }
 ```
 
-After registration, the `tuner_host_id` and `listing_provider_id` should be stored in the stream record for future reference.
+After registration, Jellyfin Live TV:
+- M3U source: `http://192.168.1.100:8000/api/livetv/m3u/all`
+- EPG source: `http://192.168.1.100:8000/api/livetv/xmltv/all`
+
+### Force EPG refresh in Jellyfin
+
+The **Refresh Guide Data** button on the guide page processes cached data.
+To force an immediate re-download:
+
+**Option A:** Dashboard → Live TV → Guide Providers → edit provider → Save
+**Option B:** Dashboard → Scheduled Tasks → **Refresh Guide** → Run ▶
+
+---
+
+## Configuration (`.env`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `JELLYFIN_URL` | — | Jellyfin server URL |
+| `JELLYFIN_API_KEY` | — | Jellyfin API key (admin recommended) |
+| `JELLYFIN_USER_ID` | auto | Optional; auto-detected from first user |
+| `JELLYSTREAM_PUBLIC_URL` | — | Network-accessible URL for M3U/XMLTV/thumbnail URLs |
+| `MEDIA_PATH_MAP` | — | Path prefix rewrite (`/jf/prefix:/local/prefix`) |
+| `HOST` | `0.0.0.0` | Bind address |
+| `PORT` | `8000` | Listen port |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `SCHEDULER_ENABLED` | `true` | Enable APScheduler background jobs |
 
 ---
 
 ## Error Responses
 
-All endpoints may return the following error responses:
-
-### 404 Not Found
 ```json
-{
-  "detail": "Resource not found"
-}
-```
-
-### 422 Unprocessable Entity
-```json
-{
-  "detail": [
-    {
-      "loc": ["body", "field_name"],
-      "msg": "field required",
-      "type": "value_error.missing"
-    }
-  ]
-}
-```
-
-### 500 Internal Server Error
-```json
-{
-  "detail": "Error message"
-}
+{ "detail": "Channel not found" }          // 404
+{ "detail": "No content scheduled at this time" }  // 404 on stream
+{ "detail": "ffmpeg is not installed on the server" }  // 503
 ```
 
 ---
 
-## Data Formats
+## ScheduleEntry fields
 
-### DateTime Format
-
-All datetime fields use ISO 8601 format:
-```
-2024-01-01T20:00:00
-```
-
-### Duration
-
-Duration is specified in seconds (integer):
-```
-10500  # 2 hours, 55 minutes
-```
-
-### Metadata
-
-The `extra_metadata` field stores JSON as a string:
-```json
-{
-  "type": "Movie",
-  "year": 1972,
-  "seriesName": "Breaking Bad",
-  "seasonNumber": 1,
-  "episodeNumber": 1
-}
-```
+| Field | Type | Source |
+|---|---|---|
+| `title` | string | Jellyfin item name |
+| `series_name` | string\|null | Jellyfin `SeriesName` |
+| `season_number` | int\|null | Jellyfin `ParentIndexNumber` |
+| `episode_number` | int\|null | Jellyfin `IndexNumber` |
+| `media_item_id` | string | Jellyfin item ID |
+| `item_type` | `Movie`\|`Episode` | Jellyfin `Type` |
+| `genres` | JSON string | Jellyfin `Genres` |
+| `start_time` | datetime UTC | Computed at generation |
+| `end_time` | datetime UTC | `start_time + duration` |
+| `duration` | int (seconds) | From `RunTimeTicks` |
+| `file_path` | string\|null | From Jellyfin `Path` / `MediaSources` |
+| `description` | string\|null | `<plot>` from `.nfo` sidecar |
+| `content_rating` | string\|null | `<mpaa>` from `.nfo` sidecar |
+| `thumbnail_path` | string\|null | `.jpg` sidecar next to video |
+| `air_date` | string\|null | `<aired>` from `.nfo` sidecar |

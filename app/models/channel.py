@@ -22,6 +22,10 @@ class Channel(Base):
     channel_number = Column(String(10), nullable=True)   # e.g. "100.1"
     enabled = Column(Boolean, default=True)
 
+    # "video" — sources from movies/tvshows libraries (default)
+    # "music" — sources from music libraries (planned, not yet active)
+    channel_type = Column(String(20), default="video", nullable=False)
+
     # "manual"     — user manually adds schedule entries
     # "genre_auto" — auto-generated from library + genre filters
     schedule_type = Column(String(20), default="genre_auto", nullable=False)

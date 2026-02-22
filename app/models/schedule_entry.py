@@ -45,6 +45,18 @@ class ScheduleEntry(Base):
     end_time = Column(DateTime, nullable=False)          # start_time + duration
     duration = Column(Integer, nullable=False)           # seconds
 
+    # Local file path for direct streaming (faster seek than HTTP).
+    # Populated at schedule generation time from Jellyfin's Path field.
+    # May be None for older entries or when running on a different machine
+    # without a MEDIA_PATH_MAP configured.
+    file_path = Column(Text, nullable=True)
+
+    # Sidecar metadata — read from the .nfo / .jpg files next to the video.
+    description    = Column(Text, nullable=True)         # <plot> from .nfo
+    content_rating = Column(String(20), nullable=True)   # <mpaa> e.g. "TV-14"
+    thumbnail_path = Column(Text, nullable=True)         # absolute path to .jpg
+    air_date       = Column(String(20), nullable=True)   # "YYYY-MM-DD" from <aired>
+
     created_at = Column(DateTime, server_default=func.now())
 
     # Compound index for fast EPG and "now playing" queries

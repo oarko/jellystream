@@ -10,23 +10,25 @@
     <header>
         <div class="container">
             <h1>JellyStream</h1>
-            <p>Media streaming integration for Jellyfin</p>
+            <p>Virtual TV channel generator for Jellyfin</p>
         </div>
     </header>
 
     <div class="container">
         <div class="card">
             <h2>Welcome to JellyStream</h2>
-            <p>Create and manage your custom streaming channels.</p>
-            <button class="btn">Get Started</button>
+            <p>Create 24/7 virtual TV channels from your Jellyfin media library.</p>
+            <a href="/pages/channels.php" class="btn">📺 Manage Channels</a>
         </div>
 
         <div class="card">
             <h3>Quick Links</h3>
             <ul>
+                <li><a href="/pages/channels.php">Channels</a></li>
+                <li><a href="/api/livetv/m3u/all">M3U Playlist (all channels)</a></li>
+                <li><a href="/api/livetv/xmltv/all">XMLTV EPG (all channels)</a></li>
                 <li><a href="/docs">API Documentation</a></li>
-                <li><a href="/api/streams">Manage Streams</a></li>
-                <li><a href="/api/schedules">View Schedules</a></li>
+                <li><a href="/health">Health Check</a></li>
             </ul>
         </div>
     </div>

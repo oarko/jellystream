@@ -73,7 +73,7 @@ class ApiClient {
         $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $error = curl_error($ch);
 
-        curl_close($ch);
+        #curl_close($ch);  //deprecated in PHP 8.3, will be closed automatically at the end of the request
 
         if ($error) {
             return [

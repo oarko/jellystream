@@ -57,13 +57,22 @@ def _xmltv_programme(entry: ScheduleEntry) -> str:
     start = entry.start_time.strftime("%Y%m%d%H%M%S +0000")
     stop = entry.end_time.strftime("%Y%m%d%H%M%S +0000")
 
+    if entry.series_name:
+        # Episode: show series name as title, episode title as sub-title
+        main_title = _xml_escape(entry.series_name)
+        sub_title = _xml_escape(entry.title)
+    else:
+        # Movie: just use the title, no sub-title
+        main_title = _xml_escape(entry.title)
+        sub_title = None
+
     lines = (
         f'  <programme channel="{entry.channel_id}" start="{start}" stop="{stop}">\n'
-        f'    <title>{_xml_escape(entry.title)}</title>\n'
+        f'    <title>{main_title}</title>\n'
     )
 
-    if entry.series_name:
-        lines += f'    <sub-title>{_xml_escape(entry.series_name)}</sub-title>\n'
+    if sub_title:
+        lines += f'    <sub-title>{sub_title}</sub-title>\n'
 
     if entry.description:
         lines += f'    <desc lang="en">{_xml_escape(entry.description)}</desc>\n'

@@ -74,6 +74,15 @@ $api_ok = $health['success'] && ($health['data']['status'] ?? '') === 'healthy';
         .link-btn:hover { border-color: #00A4DC; color: #00A4DC; }
         .empty-state { text-align: center; padding: 40px; color: #555; }
         .empty-state a { color: #00A4DC; }
+        @media(max-width:640px) {
+            .header { flex-direction: column; align-items: flex-start; gap: 10px; }
+            .header-left h1 { font-size: 22px; }
+            .header-right { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
+            .channel-grid { grid-template-columns: 1fr; }
+        }
+        @media(max-width:480px) {
+            .ch-actions { flex-wrap: wrap; }
+        }
     </style>
 </head>
 <body>

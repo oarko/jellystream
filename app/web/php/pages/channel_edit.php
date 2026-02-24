@@ -103,6 +103,24 @@ $public_url_is_local = in_array(
         .status-err { background: #7f0000; color: #ef9a9a; }
         .hint { font-size: 12px; color: #666; margin-top: 4px; }
         #genre-section { display: none; }
+
+        @media(max-width:640px) {
+            /* Collapse the 2-col tuner/bitrate grid */
+            div[style*="grid-template-columns:1fr 1fr"] { display: block !important; }
+            /* Collapse the 3-col toggle grid */
+            div[style*="grid-template-columns:1fr 1fr 1fr"] { display: flex !important; flex-wrap: wrap !important; gap: 10px !important; }
+            /* Genre add row: stack selects + button */
+            .genre-add-row { flex-direction: column; align-items: stretch; }
+            .genre-add-row select,
+            .genre-add-row button { width: 100%; }
+            /* Library add row */
+            .add-row { flex-wrap: wrap; }
+            .add-row button { width: 100%; }
+            /* Action buttons */
+            .form-actions { flex-direction: column; align-items: stretch; }
+            .form-actions .btn,
+            .form-actions a.btn { text-align: center; width: 100%; }
+        }
     </style>
 </head>
 <body>

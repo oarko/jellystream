@@ -311,3 +311,31 @@ input:checked + .slider::before { transform: translateX(20px); }
     justify-content: flex-end;
     margin-top: 16px;
 }
+
+/* ── Scrollable table wrapper ────────────────────────────── */
+.table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* ── Global mobile tweaks (≤ 640px) ─────────────────────── */
+@media (max-width: 640px) {
+    body { padding: 10px; }
+
+    .card { padding: 14px; }
+
+    .header { padding: 12px 14px; gap: 10px; }
+    .header h1 { font-size: 18px; }
+
+    /* Form action buttons full-width stacked */
+    .form-actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .form-actions .btn,
+    .form-actions a.btn { text-align: center; }
+
+    /* Quick-link buttons: two per row */
+    .links { gap: 8px; }
+    .link-btn { flex: 1 1 calc(50% - 8px); text-align: center; }
+}

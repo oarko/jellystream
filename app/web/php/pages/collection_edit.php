@@ -94,10 +94,57 @@ $libraries = $lib_resp['success'] ? ($lib_resp['data']['libraries'] ?? []) : [];
         #status-msg { margin-bottom:12px; padding:10px 14px; border-radius:6px; display:none; font-size:14px; }
         .loading-msg { color:#888; font-size:13px; text-align:center; padding:24px; }
         .type-badge { font-size:10px; font-weight:700; padding:1px 5px; border-radius:8px; }
-        .type-movie   { background:#1b3a6b; color:#90caf9; }
-        .type-series  { background:#4a1b6b; color:#ce93d8; }
-        .type-season  { background:#6b4a1b; color:#ffcc80; }
-        .type-episode { background:#1b6b2a; color:#a5d6a7; }
+        .type-movie      { background:#1b3a6b; color:#90caf9; }
+        .type-series     { background:#4a1b6b; color:#ce93d8; }
+        .type-season     { background:#6b4a1b; color:#ffcc80; }
+        .type-episode    { background:#1b6b2a; color:#a5d6a7; }
+        .type-collection { background:#1b5a5a; color:#80cbc4; }
+
+        /* ── Collection browse list ─────────────────────────────────── */
+        .collection-list { display:flex; flex-direction:column; gap:6px; }
+        .collection-row  { display:flex; align-items:center; gap:12px; background:#1a1a1a; border-radius:8px; padding:10px 12px; border:2px solid transparent; transition:border-color .15s; }
+        .collection-row.selected { border-color:#00A4DC; }
+        .collection-row:hover { background:#202020; }
+        .col-row-icon { font-size:22px; flex-shrink:0; }
+        .col-row-info { flex:1; min-width:0; }
+        .col-row-name { font-size:14px; color:#ddd; }
+        .col-row-meta { font-size:12px; color:#666; margin-top:2px; }
+
+        /* ── Mobile floating cart button ────────────────────────────── */
+        #cart-fab {
+            display: none;
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 50;
+            background: #00A4DC;
+            color: #fff;
+            border: none;
+            border-radius: 28px;
+            padding: 12px 20px;
+            font-size: 15px;
+            cursor: pointer;
+            box-shadow: 0 4px 16px rgba(0,0,0,.55);
+            align-items: center;
+            gap: 8px;
+            white-space: nowrap;
+        }
+        #cart-fab.has-items { background: #0090c2; }
+
+        /* ── Mobile responsive tweaks ───────────────────────────────── */
+        @media(max-width:900px) {
+            #cart-fab { display: flex; }
+            .media-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+            .browse-controls input[type="number"] { width: 80px; flex: none; }
+            .cart-items { max-height: 300px; }
+        }
+        @media(max-width:500px) {
+            .media-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; }
+            .episode-thumb { width: 60px; height: 34px; }
+            .browse-controls { gap: 6px; }
+            .browse-controls input[type="number"] { width: 64px; }
+            .card-title { font-size: 11px; }
+        }
     </style>
 </head>
 <body>
@@ -115,7 +162,7 @@ $libraries = $lib_resp['success'] ? ($lib_resp['data']['libraries'] ?? []) : [];
             <div class="card" style="margin-bottom:0;">
                 <h2 style="margin-top:0;">Browse Media</h2>
 
-                <!-- Controls row -->
+                <!-- Controls row: library picker + Collections toggle -->
                 <div class="browse-controls">
                     <select id="lib-select" onchange="onLibraryChange()">
                         <option value="">— Select library —</option>
@@ -131,13 +178,22 @@ $libraries = $lib_resp['success'] ? ($lib_resp['data']['libraries'] ?? []) : [];
                         <?php endforeach; ?>
                     </select>
 
+                    <button class="type-tab" id="tab-collection"
+                            onclick="setType('Collection')"
+                            style="border-radius:6px;border:1px solid #333;flex-shrink:0;">
+                        📦 Collections
+                    </button>
+                </div>
+
+                <!-- Sub-tabs: only shown for mixed/boxsets libraries -->
+                <div id="type-sub-tabs" style="display:none;margin-bottom:8px;">
                     <div class="type-tabs">
-                        <button class="type-tab active" id="tab-movie"  onclick="setType('Movie')">Movies</button>
-                        <button class="type-tab"        id="tab-series" onclick="setType('Series')">Series</button>
+                        <button class="type-tab active" id="tab-movie"  onclick="setSubType('Movie')">Movies</button>
+                        <button class="type-tab"        id="tab-series" onclick="setSubType('Series')">Series</button>
                     </div>
                 </div>
 
-                <div class="browse-controls">
+                <div class="browse-controls" id="search-controls">
                     <input type="text" id="search-input" placeholder="Search…" onkeydown="if(event.key==='Enter')doSearch()">
                     <input type="number" id="year-from" placeholder="Year from" min="1900" max="2099" style="width:100px;flex:none;">
                     <input type="number" id="year-to"   placeholder="Year to"   min="1900" max="2099" style="width:100px;flex:none;">
@@ -170,7 +226,7 @@ $libraries = $lib_resp['success'] ? ($lib_resp['data']['libraries'] ?? []) : [];
                     <span class="cart-clear" onclick="clearCart()">Clear All</span>
                 </div>
                 <div class="cart-items" id="cart-items">
-                    <div class="cart-empty" id="cart-empty">No items selected yet.</div>
+                    <div class="cart-empty">No items selected yet.</div>
                 </div>
 
                 <div class="save-form">
@@ -189,6 +245,11 @@ $libraries = $lib_resp['success'] ? ($lib_resp['data']['libraries'] ?? []) : [];
     </div>
 </div>
 
+<!-- Mobile floating cart button (hidden on desktop via CSS) -->
+<button id="cart-fab" onclick="scrollToCart()" title="View selected items">
+    🛒 <span id="cart-fab-count">0</span> item<span id="cart-fab-s">s</span>
+</button>
+
 <script>
 const API_BASE   = '<?php echo getClientApiBaseUrl(); ?>';
 const IS_EDIT    = <?php echo $is_edit ? 'true' : 'false'; ?>;
@@ -204,7 +265,7 @@ let browseState = {
     yearFrom: null,
     yearTo: null,
     page: 0,
-    limit: 24,
+    limit: 25,
     totalItems: 0,
     // drill-down
     mode: 'browse',       // 'browse' | 'seasons' | 'episodes'
@@ -237,22 +298,72 @@ let browseState = {
 <?php endif; ?>
 
 // ─── Library / type controls ──────────────────────────────────────────────
+
+// Called whenever the user changes the library picker.
+// Auto-detects content type from the library's CollectionType and exits
+// Collections mode if it was active.
 function onLibraryChange() {
     const sel = document.getElementById('lib-select');
     browseState.libraryId = sel.value;
     browseState.page = 0;
+
+    // Exit Collections mode
+    document.getElementById('tab-collection').classList.remove('active');
+    document.getElementById('search-controls').style.display = '';
+
     resetDrill();
-    if (browseState.libraryId) browse();
-    else showPlaceholder('Select a library to start browsing.');
+
+    if (!browseState.libraryId) {
+        document.getElementById('type-sub-tabs').style.display = 'none';
+        showPlaceholder('Select a library to start browsing.');
+        return;
+    }
+
+    // Derive content type from the library's CollectionType attribute
+    const opt      = sel.options[sel.selectedIndex];
+    const collType = opt.dataset.type || 'movies';  // movies | tvshows | mixed | boxsets
+    const isMixed  = (collType === 'mixed' || collType === 'boxsets');
+
+    if (collType === 'tvshows') {
+        browseState.type = 'Series';
+    } else {
+        // movies, mixed, boxsets → default to Movie
+        browseState.type = 'Movie';
+    }
+
+    // Show Movie/Series sub-tabs only for mixed-content libraries
+    const subTabs = document.getElementById('type-sub-tabs');
+    subTabs.style.display = isMixed ? '' : 'none';
+    if (isMixed) {
+        document.getElementById('tab-movie').classList.add('active');
+        document.getElementById('tab-series').classList.remove('active');
+    }
+
+    browse();
 }
 
-function setType(type) {
+// Switch Movie ↔ Series within a mixed/boxsets library
+function setSubType(type) {
     browseState.type = type;
     browseState.page = 0;
-    document.getElementById('tab-movie').classList.toggle('active', type === 'Movie');
+    document.getElementById('tab-movie').classList.toggle('active',  type === 'Movie');
     document.getElementById('tab-series').classList.toggle('active', type === 'Series');
     resetDrill();
     if (browseState.libraryId) browse();
+}
+
+// Switch to Collections-browse mode (our internal collections, not Jellyfin)
+function setType(type) {
+    // Only 'Collection' is passed here now
+    browseState.type = type;
+    browseState.page = 0;
+
+    document.getElementById('tab-collection').classList.add('active');
+    document.getElementById('type-sub-tabs').style.display  = 'none';
+    document.getElementById('search-controls').style.display = 'none';
+
+    resetDrill();
+    browseCollections();
 }
 
 function doSearch() {
@@ -510,6 +621,84 @@ function renderEpisodeList(episodes, seasonId, seasonTitle, seasonNumber) {
     area.appendChild(list);
 }
 
+// ─── Collections browse ───────────────────────────────────────────────────
+async function browseCollections() {
+    showLoading();
+    hidePagination();
+    try {
+        const resp = await fetch(`${API_BASE}/collections/`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        renderCollectionList(data.collections || data || []);
+    } catch (e) {
+        showPlaceholder(`Error loading collections: ${e.message}`);
+    }
+}
+
+function renderCollectionList(collections) {
+    const area = document.getElementById('media-area');
+    // Exclude the collection currently being edited (can't add itself)
+    const filtered = COLLECTION_ID
+        ? collections.filter(c => c.id !== COLLECTION_ID)
+        : collections;
+
+    if (filtered.length === 0) {
+        area.innerHTML = '<div class="loading-msg">No other collections available.</div>';
+        return;
+    }
+    area.innerHTML = '';
+    const list = document.createElement('div');
+    list.className = 'collection-list';
+
+    for (const col of filtered) {
+        const id     = String(col.id);
+        const inCart = cart.has(id);
+        const meta   = [
+            `${col.item_count || 0} item${col.item_count !== 1 ? 's' : ''}`,
+            col.description || '',
+        ].filter(Boolean).join(' · ');
+
+        const row = document.createElement('div');
+        row.className  = `collection-row${inCart ? ' selected' : ''}`;
+        row.dataset.id = id;
+        row.innerHTML  = `
+            <div class="col-row-icon">📦</div>
+            <div class="col-row-info">
+                <div class="col-row-name">${esc(col.name)}</div>
+                ${meta ? `<div class="col-row-meta">${esc(meta)}</div>` : ''}
+            </div>
+            <button class="btn btn-sm ${inCart ? 'btn-secondary' : 'btn-primary'}"
+                    id="col-btn-${esc(id)}"
+                    onclick="toggleCollectionInCart('${esc(id)}','${esc(col.name)}',event)">
+                ${inCart ? '✓ Added' : '+ Add'}
+            </button>
+        `;
+        list.appendChild(row);
+    }
+    area.appendChild(list);
+}
+
+function toggleCollectionInCart(colId, name, event) {
+    if (event) event.stopPropagation();
+    const row = document.querySelector(`.collection-row[data-id="${colId}"]`);
+    const btn = document.getElementById(`col-btn-${colId}`);
+    if (cart.has(colId)) {
+        cart.delete(colId);
+        if (row) row.classList.remove('selected');
+        if (btn) { btn.textContent = '+ Add'; btn.className = 'btn btn-sm btn-primary'; }
+    } else {
+        cart.set(colId, {
+            media_item_id: colId,
+            item_type:     'Collection',
+            title:         name,
+            library_id:    '',
+        });
+        if (row) row.classList.add('selected');
+        if (btn) { btn.textContent = '✓ Added'; btn.className = 'btn btn-sm btn-secondary'; }
+    }
+    renderCart();
+}
+
 // ─── Cart helpers ─────────────────────────────────────────────────────────
 function toggleCartFromCard(card, itemData) {
     const id = itemData.media_item_id;
@@ -591,46 +780,71 @@ function removeFromCart(id) {
         const btn = el.querySelector('.ep-add button');
         if (btn) { btn.textContent = '+'; btn.className = 'btn btn-sm btn-primary'; }
     }
-    const epBtn = document.getElementById(`ep-btn-${id}`);
-    if (epBtn) { epBtn.textContent = '+'; epBtn.className = 'btn btn-sm btn-primary'; }
+    const epBtn  = document.getElementById(`ep-btn-${id}`);
+    if (epBtn)  { epBtn.textContent = '+';      epBtn.className = 'btn btn-sm btn-primary'; }
+    const colBtn = document.getElementById(`col-btn-${id}`);
+    if (colBtn) { colBtn.textContent = '+ Add'; colBtn.className = 'btn btn-sm btn-primary'; }
 }
 
 function clearCart() {
     cart.clear();
     renderCart();
-    document.querySelectorAll('.media-card.selected, .episode-row.selected').forEach(el => {
+    document.querySelectorAll('.media-card.selected, .episode-row.selected, .collection-row.selected').forEach(el => {
         el.classList.remove('selected');
         const check = el.querySelector('.card-check');
         if (check) check.textContent = '';
+        const colBtn = el.querySelector('button.btn');
+        if (colBtn && el.classList.contains('collection-row')) {
+            colBtn.textContent = '+ Add'; colBtn.className = 'btn btn-sm btn-primary';
+        }
     });
+}
+
+function scrollToCart() {
+    document.querySelector('.cart-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function renderCart() {
     const container = document.getElementById('cart-items');
-    const empty     = document.getElementById('cart-empty');
     document.getElementById('cart-count').textContent = cart.size;
 
-    if (cart.size === 0) {
-        container.innerHTML = '';
-        empty.style.display = 'block';
-        return;
-    }
-    empty.style.display = 'none';
+    // Update mobile FAB
+    const fab = document.getElementById('cart-fab');
+    const fabCount = document.getElementById('cart-fab-count');
+    const fabS     = document.getElementById('cart-fab-s');
+    if (fabCount) fabCount.textContent = cart.size;
+    if (fabS)     fabS.textContent     = cart.size === 1 ? '' : 's';
+    if (fab)      fab.classList.toggle('has-items', cart.size > 0);
+
+    // Always reset — do NOT rely on getElementById('cart-empty') after the first
+    // render because container.innerHTML='' destroys it from the DOM.
     container.innerHTML = '';
 
+    if (cart.size === 0) {
+        container.innerHTML = '<div class="cart-empty">No items selected yet.</div>';
+        return;
+    }
+
     for (const [id, item] of cart) {
-        const thumbUrl = `${API_BASE}/jellyfin/items/${encodeURIComponent(id)}/image?type=Primary&maxWidth=60`;
         const typeLabel = item.item_type || 'Item';
-        const typeCls   = {Movie:'type-movie', Series:'type-series', Season:'type-season', Episode:'type-episode'}[typeLabel] || '';
+        const typeCls   = {
+            Movie:'type-movie', Series:'type-series',
+            Season:'type-season', Episode:'type-episode',
+            Collection:'type-collection',
+        }[typeLabel] || '';
         const subtitle  = item.series_name
             ? (item.season_number ? `S${String(item.season_number).padStart(2,'0')}` : '') + ' ' + item.series_name
             : '';
 
+        // Collection items have no Jellyfin image — use an icon placeholder
+        const thumbHtml = typeLabel === 'Collection'
+            ? `<div class="cart-thumb" style="display:flex;align-items:center;justify-content:center;font-size:18px;background:#1a3a3a;border-radius:3px;">📦</div>`
+            : `<img class="cart-thumb" src="${esc(`${API_BASE}/jellyfin/items/${encodeURIComponent(id)}/image?type=Primary&maxWidth=60`)}" alt="" onerror="this.style.display='none'" loading="lazy">`;
+
         const div = document.createElement('div');
         div.className = 'cart-item';
         div.innerHTML = `
-            <img class="cart-thumb" src="${esc(thumbUrl)}" alt=""
-                 onerror="this.style.display='none'" loading="lazy">
+            ${thumbHtml}
             <div class="cart-item-info">
                 <div class="cart-item-title" title="${esc(item.title)}">${esc(item.title)}</div>
                 <div class="cart-item-type">

@@ -45,6 +45,12 @@ $collections = $response['success'] ? ($response['data'] ?? []) : [];
         .v-deleted { color:#e57373; }
         .v-nopath  { color:#888; }
         #status-msg { margin-bottom:14px; padding:10px 14px; border-radius:6px; display:none; font-size:14px; }
+        @media(max-width:640px) {
+            .header { flex-direction: column; align-items: flex-start; gap: 10px; }
+            .header > div { width: 100%; flex-wrap: wrap; }
+            /* Hide Source column on phones */
+            th:nth-child(2), td:nth-child(2) { display: none; }
+        }
     </style>
 </head>
 <body>
@@ -66,10 +72,12 @@ $collections = $response['success'] ? ($response['data'] ?? []) : [];
 
     <div class="card">
         <?php if (empty($collections)): ?>
+
             <p style="color:#888;text-align:center;padding:32px 0;">
                 No collections yet. Create one or import a Jellyfin boxset.
             </p>
         <?php else: ?>
+        <div class="table-scroll">
         <table>
             <thead>
                 <tr>
@@ -113,6 +121,7 @@ $collections = $response['success'] ? ($response['data'] ?? []) : [];
             <?php endforeach; ?>
             </tbody>
         </table>
+        </div><!-- /.table-scroll -->
         <?php endif; ?>
     </div>
 </div>

@@ -79,8 +79,7 @@ server.errorlog = "$(pwd)/logs/lighttpd-error.log"
 server.pid-file = "$LIGHTTPD_PID_FILE"
 server.port = $PHP_PORT
 
-# Bind to localhost only (use 0.0.0.0 for all interfaces)
-server.bind = "localhost"
+server.bind = "0.0.0.0"
 
 # Index files
 index-file.names = ( "index.php", "index.html" )
@@ -144,7 +143,7 @@ echo -e "${GREEN}✓ Configuration created${NC}"
 echo -e "${GREEN}✓ PHP-CGI found: $PHP_CGI${NC}"
 echo ""
 echo -e "${BLUE}Starting Lighttpd...${NC}"
-echo -e "${BLUE}Frontend URL: http://localhost:${PHP_PORT}${NC}"
+echo -e "${BLUE}Frontend URL: http://$(hostname -I | awk '{print $1}'):${PHP_PORT}${NC}"
 echo -e "${BLUE}API Backend: http://localhost:${API_PORT}${NC}"
 echo ""
 echo -e "${YELLOW}Make sure the FastAPI backend is running on port ${API_PORT}!${NC}"

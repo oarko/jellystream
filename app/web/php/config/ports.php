@@ -25,11 +25,30 @@ if (file_exists($php_config_file)) {
 }
 
 /**
- * Get the full API URL based on configured port.
+ * Get the full API URL for server-side PHP calls (api_client.php).
  * Host resolved from: JELLYSTREAM_API_HOST env var → .phpconfig API_HOST → localhost
  */
 function getApiBaseUrl() {
     $host = getenv('JELLYSTREAM_API_HOST') ?: API_HOST;
+    return 'http://' . $host . ':' . API_BACKEND_PORT . '/api';
+}
+
+/**
+ * Get the API URL as the browser should call it (for embedding in JavaScript).
+ *
+ * Uses the same hostname/IP the browser used to reach this PHP page, so
+ * the URL resolves correctly even when accessed from a remote machine.
+ * Falls back to JELLYSTREAM_API_HOST env var or .phpconfig API_HOST when set.
+ */
+function getClientApiBaseUrl() {
+    // Explicit override (e.g. for reverse-proxy setups)
+    $env_host = getenv('JELLYSTREAM_API_HOST');
+    if ($env_host && $env_host !== 'localhost' && $env_host !== '127.0.0.1') {
+        return 'http://' . $env_host . ':' . API_BACKEND_PORT . '/api';
+    }
+    // Use the host portion of the browser's request URL
+    $http_host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+    $host = strtok($http_host, ':'); // strip port if present
     return 'http://' . $host . ':' . API_BACKEND_PORT . '/api';
 }
 

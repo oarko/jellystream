@@ -124,7 +124,7 @@ $libraries = $lib_resp['success'] ? ($lib_resp['data']['libraries'] ?? []) : [];
                             $type = $lib['CollectionType'] ?? '';
                             if (!in_array($type, ['movies','tvshows','mixed','boxsets'])) continue;
                             ?>
-                            <option value="<?php echo htmlspecialchars($lib['ItemId']); ?>"
+                            <option value="<?php echo htmlspecialchars($lib['Id']); ?>"
                                     data-type="<?php echo htmlspecialchars($type); ?>">
                                 <?php echo htmlspecialchars($lib['Name']); ?>
                             </option>
@@ -190,7 +190,7 @@ $libraries = $lib_resp['success'] ? ($lib_resp['data']['libraries'] ?? []) : [];
 </div>
 
 <script>
-const API_BASE   = '<?php echo getApiBaseUrl(); ?>';
+const API_BASE   = '<?php echo getClientApiBaseUrl(); ?>';
 const IS_EDIT    = <?php echo $is_edit ? 'true' : 'false'; ?>;
 const COLLECTION_ID = <?php echo $col_id ?? 'null'; ?>;
 

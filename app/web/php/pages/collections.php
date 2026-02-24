@@ -130,7 +130,7 @@ $collections = $response['success'] ? ($response['data'] ?? []) : [];
 </div>
 
 <script>
-const API_BASE = '<?php echo getApiBaseUrl(); ?>';
+const API_BASE = '<?php echo getClientApiBaseUrl(); ?>';
 
 function showStatus(msg, ok) {
     const el = document.getElementById('status-msg');

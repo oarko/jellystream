@@ -156,9 +156,9 @@ $api_ok = $health['success'] && ($health['data']['status'] ?? '') === 'healthy';
                 <div class="ch-actions">
                     <a href="pages/channel_edit.php?id=<?php echo $ch['id']; ?>" class="btn btn-secondary btn-sm">Edit</a>
                     <?php if ($ch['enabled']): ?>
-                    <a href="<?php echo getApiBaseUrl(); ?>/livetv/stream/<?php echo $ch['id']; ?>" class="btn btn-sm" target="_blank">▶ Stream</a>
+                    <a href="<?php echo getClientApiBaseUrl(); ?>/livetv/stream/<?php echo $ch['id']; ?>" class="btn btn-sm" target="_blank">▶ Stream</a>
                     <?php endif; ?>
-                    <a href="<?php echo getApiBaseUrl(); ?>/livetv/m3u/<?php echo $ch['id']; ?>" class="btn btn-secondary btn-sm" target="_blank">M3U</a>
+                    <a href="<?php echo getClientApiBaseUrl(); ?>/livetv/m3u/<?php echo $ch['id']; ?>" class="btn btn-secondary btn-sm" target="_blank">M3U</a>
                 </div>
             </div>
             <?php endforeach; ?>
@@ -171,8 +171,9 @@ $api_ok = $health['success'] && ($health['data']['status'] ?? '') === 'healthy';
         <h2>Quick Links</h2>
         <div class="links">
             <a href="pages/channels.php"                          class="link-btn">📋 All Channels</a>
-            <a href="<?php echo getApiBaseUrl(); ?>/livetv/m3u/all"   class="link-btn" target="_blank">📄 M3U Playlist</a>
-            <a href="<?php echo getApiBaseUrl(); ?>/livetv/xmltv/all" class="link-btn" target="_blank">📅 XMLTV EPG</a>
+            <a href="pages/collections.php"                       class="link-btn">📦 Collections</a>
+            <a href="<?php echo getClientApiBaseUrl(); ?>/livetv/m3u/all"   class="link-btn" target="_blank">📄 M3U Playlist</a>
+            <a href="<?php echo getClientApiBaseUrl(); ?>/livetv/xmltv/all" class="link-btn" target="_blank">📅 XMLTV EPG</a>
             <a href="/docs"                                        class="link-btn" target="_blank">📖 API Docs</a>
             <a href="/health"                                      class="link-btn" target="_blank">❤ Health</a>
         </div>

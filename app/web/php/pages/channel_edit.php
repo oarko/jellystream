@@ -394,7 +394,7 @@ $public_url_is_local = in_array(
 <script>
 const IS_EDIT    = <?php echo $is_edit ? 'true' : 'false'; ?>;
 const CHANNEL_ID = <?php echo $channel_id ?? 'null'; ?>;
-const API_BASE   = '<?php echo getApiBaseUrl(); ?>';
+const API_BASE   = '<?php echo getClientApiBaseUrl(); ?>';
 
 // ── Channel type ──────────────────────────────────────────────────────────────
 // CollectionTypes valid for Video channels

@@ -113,6 +113,24 @@ check_system_requirements() {
             fi
         fi
 
+        # Check for ffmpeg (required for stream proxy and audio detection)
+        print_info "Checking for ffmpeg..."
+        if ! command -v ffmpeg &> /dev/null || ! command -v ffprobe &> /dev/null; then
+            print_warning "ffmpeg / ffprobe not found — required for stream proxy and audio detection"
+            read -p "Install ffmpeg now? (Y/n): " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+                print_info "Installing ffmpeg..."
+                sudo apt install -y ffmpeg
+                print_success "ffmpeg installed!"
+            else
+                print_warning "Skipping ffmpeg. Streams will not work until ffmpeg is installed."
+            fi
+        else
+            FFMPEG_VER=$(ffmpeg -version 2>&1 | head -1 | awk '{print $3}')
+            print_success "ffmpeg found (${FFMPEG_VER})"
+        fi
+
         # Ask about Lighttpd installation for production
         print_info "Lighttpd is recommended for production deployments"
         print_info "It provides better performance than PHP's built-in server"
@@ -181,9 +199,13 @@ setup_env() {
         print_info "Creating .env file from template..."
         cp .env.example .env
         print_success ".env file created!"
-        print_warning "Please edit .env and configure your Jellyfin settings:"
-        echo "  - JELLYFIN_URL"
-        echo "  - JELLYFIN_API_KEY"
+        print_warning "Please edit .env and configure your settings:"
+        echo "  - JELLYFIN_URL           Jellyfin server address (e.g. http://192.168.1.100:8096)"
+        echo "  - JELLYFIN_API_KEY       Admin API key from Jellyfin Dashboard → API Keys"
+        echo "  - JELLYSTREAM_PUBLIC_URL Network-accessible URL of this server (e.g. http://192.168.1.100:8000)"
+        echo "                           Must NOT be localhost — Jellyfin needs to reach this address"
+        echo "  - PREFERRED_AUDIO_LANGUAGE  ISO 639-2 code for preferred audio track (default: eng)"
+        echo "  - MEDIA_PATH_MAP         Optional: /jellyfin/path:/local/path (if paths differ)"
     else
         print_success ".env file already exists"
     fi
@@ -215,14 +237,16 @@ main() {
     echo -e "${GREEN}╚═══════════════════════════════════════════╝${NC}"
     echo ""
     print_info "Next steps:"
-    echo "  1. Edit .env file with your Jellyfin settings"
-    echo "  2. Activate the virtual environment:"
-    echo "     ${YELLOW}source venv/bin/activate${NC}"
-    echo "  3. Start the backend:"
-    echo "     ${YELLOW}python run.py${NC}"
-    echo "  4. Start the frontend (choose one):"
-    echo "     ${YELLOW}./start-php.sh${NC}      (Development - PHP built-in server)"
-    echo "     ${YELLOW}./start-lighttpd.sh${NC} (Production - Lighttpd server)"
+    echo "  1. Edit .env with your Jellyfin settings (see above)"
+    echo "  2. Start JellyStream:"
+    echo "     ${YELLOW}./start.sh${NC}"
+    echo "     — or manually:"
+    echo "     ${YELLOW}source venv/bin/activate && python3 run.py${NC}"
+    echo "  3. Start the web frontend (choose one):"
+    echo "     ${YELLOW}./start-php.sh${NC}      (Development - PHP built-in server, port 8080)"
+    echo "     ${YELLOW}./start-lighttpd.sh${NC} (Production  - Lighttpd server)"
+    echo "  4. Open the web UI at: ${YELLOW}http://localhost:8080${NC}"
+    echo "  5. Create channels, build collections, and register with Jellyfin Live TV"
     echo ""
 
     # Ask if user wants to run the app now
@@ -231,9 +255,9 @@ main() {
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         print_info "Starting JellyStream..."
         echo ""
-        python run.py
+        $PYTHON_CMD run.py
     else
-        print_info "You can start JellyStream later with: ${YELLOW}python run.py${NC}"
+        print_info "You can start JellyStream later with: ${YELLOW}./start.sh${NC}"
     fi
 }
 

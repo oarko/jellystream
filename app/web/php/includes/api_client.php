@@ -280,4 +280,34 @@ class ApiClient {
     public function generateChannelSchedule($channel_id, $days = 7) {
         return $this->post("/channels/{$channel_id}/generate-schedule?days={$days}");
     }
+
+    // ── Collections ────────────────────────────────────────────────────────
+
+    public function getCollections() {
+        return $this->get('/collections/');
+    }
+
+    public function getCollection($id) {
+        return $this->get("/collections/{$id}");
+    }
+
+    public function createCollection($data) {
+        return $this->post('/collections/', $data);
+    }
+
+    public function updateCollection($id, $data) {
+        return $this->put("/collections/{$id}", $data);
+    }
+
+    public function deleteCollection($id) {
+        return $this->delete("/collections/{$id}");
+    }
+
+    public function verifyCollection($id) {
+        return $this->get("/collections/{$id}/verify");
+    }
+
+    public function importBoxset($boxset_id) {
+        return $this->post("/collections/import/{$boxset_id}");
+    }
 }

@@ -230,6 +230,119 @@ class JellyfinClient:
         logger.debug(f"get_stream_url: item_id={item_id}")
         return url
 
+    # Collections / Browse Methods
+
+    async def get_boxsets(self) -> List[Dict[str, Any]]:
+        """
+        Return all Jellyfin boxset collections (CollectionType == "boxsets").
+        Uses the admin /Items endpoint so the call works regardless of user permissions.
+        """
+        logger.debug("get_boxsets called")
+        async with aiohttp.ClientSession() as session:
+            url = f"{self.base_url}/Items"
+            params = {
+                "IncludeItemTypes": "BoxSet",
+                "Recursive": "true",
+                "Fields": "Name,Id,PrimaryImageAspectRatio",
+                "SortBy": "SortName",
+                "SortOrder": "Ascending",
+                "Limit": 500,
+            }
+            async with session.get(url, headers=self.headers, params=params) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+        items = data.get("Items", [])
+        logger.info(f"get_boxsets: returned {len(items)} boxsets")
+        return items
+
+    async def browse_items(
+        self,
+        parent_id: str,
+        include_types: str,
+        fields: str = "Path,MediaSources,RunTimeTicks,Genres,SeriesName,ParentIndexNumber,IndexNumber,PremiereDate,ProductionYear",
+        search_term: str = "",
+        start_year: Optional[int] = None,
+        end_year: Optional[int] = None,
+        limit: int = 50,
+        start_index: int = 0,
+        recursive: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Paginated item browse for the Collections UI.
+
+        Uses the admin /Items endpoint so Path is returned for all items regardless
+        of user permission level. Supports full-text search and year range filtering.
+
+        Args:
+            parent_id:     Library or parent item ID to browse under
+            include_types: Comma-separated Jellyfin item types (e.g. "Movie", "Series", "Season", "Episode")
+            fields:        Extra fields to include in the response
+            search_term:   Optional free-text search (matches title, description, etc.)
+            start_year:    Optional production year lower bound (inclusive)
+            end_year:      Optional production year upper bound (inclusive)
+            limit:         Page size
+            start_index:   Pagination offset
+            recursive:     Recurse into sub-folders (True for library-level browse)
+
+        Returns:
+            Dict with Items[], TotalRecordCount, StartIndex
+        """
+        logger.debug(
+            f"browse_items: parent={parent_id}, types={include_types}, "
+            f"search={search_term!r}, years={start_year}-{end_year}, "
+            f"limit={limit}, offset={start_index}"
+        )
+        async with aiohttp.ClientSession() as session:
+            url = f"{self.base_url}/Items"
+            params: Dict[str, Any] = {
+                "ParentId": parent_id,
+                "IncludeItemTypes": include_types,
+                "Recursive": str(recursive).lower(),
+                "Fields": fields,
+                "SortBy": "SortName",
+                "SortOrder": "Ascending",
+                "Limit": limit,
+                "StartIndex": start_index,
+            }
+            if search_term:
+                params["SearchTerm"] = search_term
+            if start_year:
+                params["MinPremiereDate"] = f"{start_year}-01-01T00:00:00"
+            if end_year:
+                params["MaxPremiereDate"] = f"{end_year}-12-31T23:59:59"
+
+            async with session.get(url, headers=self.headers, params=params) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+        total = data.get("TotalRecordCount", 0)
+        items = data.get("Items", [])
+        logger.debug(f"browse_items: returned {len(items)}/{total}")
+        return data
+
+    async def get_item_image(
+        self,
+        item_id: str,
+        image_type: str = "Primary",
+        max_width: int = 400,
+    ) -> tuple[bytes, str]:
+        """
+        Fetch raw image bytes from Jellyfin for proxying to the browser.
+
+        Returns:
+            (image_bytes, content_type) tuple.
+            Raises aiohttp.ClientError on failure.
+        """
+        logger.debug(f"get_item_image: item_id={item_id}, type={image_type}, maxWidth={max_width}")
+        async with aiohttp.ClientSession() as session:
+            url = f"{self.base_url}/Items/{item_id}/Images/{image_type}"
+            params = {"maxWidth": max_width, "quality": 90}
+            async with session.get(url, headers=self.headers, params=params) as resp:
+                resp.raise_for_status()
+                content_type = resp.headers.get("Content-Type", "image/jpeg")
+                data = await resp.read()
+                logger.debug(f"get_item_image: fetched {len(data)} bytes ({content_type})")
+                return data, content_type
+
     # Live TV Integration Methods
 
     async def register_tuner_host(

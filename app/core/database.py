@@ -53,6 +53,8 @@ async def init_db():
     import app.models.channel_library
     import app.models.genre_filter
     import app.models.schedule_entry
+    import app.models.collection
+    import app.models.collection_item
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

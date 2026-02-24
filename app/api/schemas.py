@@ -71,6 +71,37 @@ class UpdateScheduleEntryRequest(BaseModel):
     episode_number: Optional[int] = None
 
 
+# ─── Collection Schemas ───────────────────────────────────────────────────────
+
+class CollectionItemInput(BaseModel):
+    """One media item to add to a collection (sent by the browse UI)."""
+    media_item_id: str
+    item_type: str                     # "Movie" | "Series" | "Season" | "Episode"
+    title: str
+    library_id: str
+    series_name: Optional[str] = None
+    season_number: Optional[int] = None
+    episode_number: Optional[int] = None
+    duration: Optional[int] = None     # seconds
+    genres: Optional[str] = None       # JSON array string
+    file_path: Optional[str] = None    # local path from Jellyfin Path field
+    sort_order: int = 0
+
+
+class CreateCollectionRequest(BaseModel):
+    """Request body for POST /api/collections/"""
+    name: str
+    description: Optional[str] = None
+    items: List[CollectionItemInput] = []
+
+
+class UpdateCollectionRequest(BaseModel):
+    """Request body for PUT /api/collections/{id}"""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    items: Optional[List[CollectionItemInput]] = None   # if present, replaces all items
+
+
 # ─── Live TV Registration Schemas ─────────────────────────────────────────────
 
 class RegisterLiveTVRequest(BaseModel):

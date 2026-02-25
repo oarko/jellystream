@@ -20,6 +20,12 @@ class GenreFilterConfig(BaseModel):
     filter_type: str = "include"  # "include" | "exclude"
 
 
+class CollectionSourceConfig(BaseModel):
+    """A JellyStream collection attached to a channel as a content source."""
+    collection_id: int
+    collection_name: str
+
+
 class CreateChannelRequest(BaseModel):
     """Request body for POST /api/channels/"""
     name: str
@@ -27,8 +33,9 @@ class CreateChannelRequest(BaseModel):
     channel_number: Optional[str] = None
     channel_type: str = "video"        # "video" | "music" (music planned)
     schedule_type: str = "genre_auto"  # "manual" | "genre_auto"
-    libraries: List[LibraryConfig]
+    libraries: List[LibraryConfig] = []
     genre_filters: Optional[List[GenreFilterConfig]] = None
+    collection_sources: Optional[List[CollectionSourceConfig]] = None
 
 
 class UpdateChannelRequest(BaseModel):
@@ -41,6 +48,7 @@ class UpdateChannelRequest(BaseModel):
     schedule_type: Optional[str] = None
     libraries: Optional[List[LibraryConfig]] = None
     genre_filters: Optional[List[GenreFilterConfig]] = None
+    collection_sources: Optional[List[CollectionSourceConfig]] = None
 
 
 # ─── Schedule Schemas ─────────────────────────────────────────────────────────

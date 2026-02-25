@@ -20,6 +20,8 @@ from app.core.logging_config import get_logger
 from app.integrations.jellyfin import JellyfinClient
 from app.models.channel import Channel
 from app.models.channel_library import ChannelLibrary
+from app.models.channel_collection_source import ChannelCollectionSource
+from app.models.collection_item import CollectionItem
 from app.models.genre_filter import GenreFilter
 from app.models.schedule_entry import ScheduleEntry
 
@@ -141,6 +143,182 @@ def _get_client() -> JellyfinClient:
     )
 
 
+def _collection_item_to_dict(item: CollectionItem) -> dict:
+    """
+    Convert a CollectionItem ORM row to the same dict format the schedule
+    fill loop expects from Jellyfin.  Pre-fills ``_nfo`` and ``_thumbnail``
+    keys so the fill loop skips sidecar I/O for these items.
+    """
+    return {
+        "Id": item.media_item_id,
+        "Name": item.title,
+        "Type": item.item_type,
+        "SeriesName": item.series_name,
+        "ParentIndexNumber": item.season_number,
+        "IndexNumber": item.episode_number,
+        "RunTimeTicks": (item.duration or 0) * _TICKS_PER_SECOND,
+        "Genres": json.loads(item.genres or "[]"),
+        "Path": item.file_path,
+        "ParentId": item.library_id or "",
+        "_nfo": {
+            "description": item.description,
+            "content_rating": item.content_rating,
+            "air_date": item.air_date,
+        },
+        "_thumbnail": item.thumbnail_path,
+    }
+
+
+async def _resolve_collection_to_items(
+    collection_id: int,
+    db: AsyncSession,
+    client: JellyfinClient,
+    _depth: int = 0,
+) -> List[dict]:
+    """
+    Resolve a collection to a flat list of playable (Movie/Episode) item dicts.
+
+    - Movie / Episode rows → converted directly via _collection_item_to_dict()
+    - Series / Season rows → Jellyfin admin /Items query to expand to episodes
+    - Collection rows     → recursive resolve (up to depth 3)
+    """
+    if _depth > 3:
+        logger.warning("_resolve_collection_to_items: max recursion depth reached")
+        return []
+
+    ci_result = await db.execute(
+        select(CollectionItem).where(CollectionItem.collection_id == collection_id)
+    )
+    collection_items = ci_result.scalars().all()
+    logger.debug(
+        f"_resolve_collection_to_items: collection_id={collection_id}, "
+        f"rows={len(collection_items)}, depth={_depth}"
+    )
+
+    resolved: List[dict] = []
+    import aiohttp
+
+    async with aiohttp.ClientSession() as session:
+        user_id = await client.ensure_user_id()
+        for ci in collection_items:
+            if ci.item_type in ("Movie", "Episode"):
+                d = _collection_item_to_dict(ci)
+                if d["RunTimeTicks"] >= _MIN_TICKS:
+                    resolved.append(d)
+
+            elif ci.item_type in ("Series", "Season"):
+                # Expand to episodes via Jellyfin admin endpoint
+                params = {
+                    "ParentId": ci.media_item_id,
+                    "Recursive": "true",
+                    "IncludeItemTypes": "Episode",
+                    "Fields": "RunTimeTicks,Genres,SeriesName,ParentIndexNumber,IndexNumber,Path,MediaSources",
+                    "UserId": user_id,
+                    "SortBy": "SortName",
+                    "SortOrder": "Ascending",
+                }
+                url = f"{client.base_url}/Items"
+                try:
+                    async with session.get(url, headers=client.headers, params=params) as resp:
+                        resp.raise_for_status()
+                        data = await resp.json()
+                    for ep in data.get("Items", []):
+                        if (ep.get("RunTimeTicks") or 0) >= _MIN_TICKS:
+                            resolved.append(ep)
+                except Exception as exc:
+                    logger.error(
+                        f"_resolve_collection_to_items: failed to expand "
+                        f"{ci.item_type} id={ci.media_item_id}: {exc}",
+                        exc_info=True,
+                    )
+
+            elif ci.item_type == "Collection":
+                try:
+                    nested = await _resolve_collection_to_items(
+                        int(ci.media_item_id), db, client, _depth + 1
+                    )
+                    resolved.extend(nested)
+                except Exception as exc:
+                    logger.error(
+                        f"_resolve_collection_to_items: failed to resolve nested "
+                        f"collection id={ci.media_item_id}: {exc}",
+                        exc_info=True,
+                    )
+
+    logger.info(
+        f"_resolve_collection_to_items: collection_id={collection_id} → "
+        f"{len(resolved)} playable items"
+    )
+    return resolved
+
+
+async def _get_collection_pool(
+    channel_id: int,
+    include_filters: list,
+    exclude_genres: set,
+    db: AsyncSession,
+    client: JellyfinClient,
+) -> List[dict]:
+    """
+    Build a deduplicated pool of items from all ChannelCollectionSource rows
+    linked to *channel_id*, then apply include/exclude genre filters.
+    """
+    cs_result = await db.execute(
+        select(ChannelCollectionSource).where(
+            ChannelCollectionSource.channel_id == channel_id
+        )
+    )
+    sources = cs_result.scalars().all()
+    if not sources:
+        return []
+
+    logger.debug(
+        f"_get_collection_pool: channel_id={channel_id}, "
+        f"sources={[s.collection_id for s in sources]}"
+    )
+
+    raw: List[dict] = []
+    seen_ids: set = set()
+    for src in sources:
+        try:
+            items = await _resolve_collection_to_items(src.collection_id, db, client)
+        except Exception as exc:
+            logger.error(
+                f"_get_collection_pool: failed to resolve collection "
+                f"{src.collection_id}: {exc}",
+                exc_info=True,
+            )
+            continue
+        for item in items:
+            item_id = item.get("Id")
+            if item_id and item_id not in seen_ids:
+                seen_ids.add(item_id)
+                raw.append(item)
+
+    # Apply include genre filter
+    if include_filters:
+        include_genres_all: set = set()
+        for gf in include_filters:
+            include_genres_all.add(gf.genre)
+        raw = [
+            item for item in raw
+            if any(g in include_genres_all for g in (item.get("Genres") or []))
+        ]
+
+    # Apply exclude genre filter
+    if exclude_genres:
+        raw = [
+            item for item in raw
+            if not any(g in exclude_genres for g in (item.get("Genres") or []))
+        ]
+
+    logger.info(
+        f"_get_collection_pool: channel_id={channel_id} → "
+        f"{len(raw)} items after genre filtering"
+    )
+    return raw
+
+
 async def _fetch_genre_items(
     client: JellyfinClient,
     library_id: str,
@@ -253,11 +431,6 @@ async def generate_channel_schedule(
         select(ChannelLibrary).where(ChannelLibrary.channel_id == channel_id)
     )
     libraries = lib_result.scalars().all()
-    if not libraries:
-        logger.warning(
-            f"generate_channel_schedule: channel {channel_id} has no libraries, skipping"
-        )
-        return 0
 
     # ── Load genre filters ────────────────────────────────────────────────────
     gf_result = await db.execute(
@@ -280,7 +453,7 @@ async def generate_channel_schedule(
     item_pool: List[dict] = []
     seen_ids: set = set()
 
-    for lib in libraries:
+    for lib in (libraries or []):
         if include_filters:
             # Group include filters by content_type to minimise API calls
             by_type: dict = {}
@@ -321,7 +494,25 @@ async def generate_channel_schedule(
                     seen_ids.add(item["Id"])
                     item_pool.append(item)
 
-    # ── Apply exclude genre filter ────────────────────────────────────────────
+    # ── Merge items from collection sources ───────────────────────────────────
+    try:
+        collection_items = await _get_collection_pool(
+            channel_id, include_filters, exclude_genres, db, client
+        )
+        for ci in collection_items:
+            ci_id = ci.get("Id")
+            if ci_id and ci_id not in seen_ids:
+                seen_ids.add(ci_id)
+                item_pool.append(ci)
+    except Exception as exc:
+        logger.error(
+            f"generate_channel_schedule: collection pool failed for "
+            f"channel {channel_id}: {exc}",
+            exc_info=True,
+        )
+
+    # ── Apply exclude genre filter (library items only — collection pool is
+    #    already filtered, but exclude again to be safe) ─────────────────────
     if exclude_genres and item_pool:
         before = len(item_pool)
         item_pool = [
@@ -390,9 +581,15 @@ async def generate_channel_schedule(
         genres_list = item.get("Genres", [])
         genres_json = json.dumps(genres_list) if genres_list else None
 
-        local_path = _apply_path_map(_extract_path(item))
-        nfo = _parse_nfo(local_path) if local_path else {}
-        thumb = _find_thumbnail(local_path) if local_path else None
+        if "_nfo" in item:
+            # Collection item — metadata is pre-filled, skip sidecar I/O
+            nfo = item["_nfo"]
+            thumb = item.get("_thumbnail")
+            local_path = _apply_path_map(item.get("Path"))
+        else:
+            local_path = _apply_path_map(_extract_path(item))
+            nfo = _parse_nfo(local_path) if local_path else {}
+            thumb = _find_thumbnail(local_path) if local_path else None
 
         entry = ScheduleEntry(
             channel_id=channel_id,

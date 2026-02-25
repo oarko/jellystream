@@ -55,6 +55,7 @@ async def init_db():
     import app.models.schedule_entry
     import app.models.collection
     import app.models.collection_item
+    import app.models.channel_collection_source
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

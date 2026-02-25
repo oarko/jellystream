@@ -10,7 +10,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # Configuration
-PHP_HOST="localhost"
+PHP_HOST="0.0.0.0"
 PHP_DIR="app/web/php"
 PHP_CONFIG_FILE="$PHP_DIR/.phpconfig"
 
@@ -67,8 +67,8 @@ cd "$PHP_DIR"
 
 echo ""
 echo -e "${GREEN}Starting PHP development server...${NC}"
-echo -e "${BLUE}Frontend URL: http://${PHP_HOST}:${PHP_PORT}${NC}"
-echo -e "${BLUE}API Backend: http://10.12.6.2:8000${NC}"
+echo -e "${BLUE}Frontend URL: http://$(hostname -I | awk '{print $1}'):${PHP_PORT}${NC}"
+echo -e "${BLUE}API Backend: http://localhost:8000${NC}"
 echo ""
 echo -e "${YELLOW}Make sure the FastAPI backend is running on port 8000!${NC}"
 echo -e "${YELLOW}Press Ctrl+C to stop${NC}"

@@ -13,19 +13,24 @@
 - When a viewer tunes in, ffmpeg **seeks to the correct offset** — no restarting from the beginning
 - A **background scheduler** (APScheduler) runs nightly to extend schedules 48+ hours ahead
 - Kodi/Jellyfin sidecar `.nfo` and `.jpg` files are read at schedule generation time to enrich EPG data
+- **Collections** let users curate named sets of media (movies, shows, seasons, episodes, or other collections) for future use as channel content sources
 
 ### Key Features
 - Genre-based auto-schedule generation (fills 7 days from Jellyfin content)
 - Multiple libraries per channel (mix Movies + TV Shows on one channel)
 - Manual schedule override support
 - M3U playlist + XMLTV EPG generation (3-hour lookback, 7-day forward)
+- XMLTV: episodes use `<title>` = series name, `<sub-title>` = episode title
 - XMLTV enriched with plot, thumbnail, air date, content rating from `.nfo`/`.jpg` sidecars
 - ffmpeg stream proxy: H.264/AAC 1080p transcoding with time-offset seeking
 - Direct file access for near-instant seek (falls back to Jellyfin HTTP stream)
 - Persistent schedules (same time = same content regardless of viewer)
 - APScheduler daily background job for schedule maintenance
+- Collections: curated media sets with browse UI, Jellyfin boxset import, file verification
+- Collections-in-Collections: a collection can reference other collections as items
+- Shared CSS stylesheet (`static/css/style.css`) — all pages link to it; page-specific styles in inline `<style>` only
 - Comprehensive debug/notice logging in all modules
-- Web interface via PHP + Lighttpd
+- Web interface via PHP + Lighttpd (binds to `0.0.0.0` for network access)
 
 ## Technology Stack
 
@@ -38,10 +43,10 @@
 - **Python Version**: 3.11+ (tested on 3.13)
 
 ### Frontend
-- **Web Server**: Lighttpd with FastCGI
+- **Web Server**: Lighttpd with FastCGI (or PHP built-in server for dev)
 - **Language**: PHP 8.x
 - **JavaScript**: Vanilla JS with async/await
-- **CSS**: Custom dark theme
+- **CSS**: Shared dark theme in `static/css/style.css`; page-specific rules in inline `<style>`
 
 ## Project Structure
 
@@ -49,39 +54,48 @@
 jellystream/
 ├── app/
 │   ├── api/              # API endpoints
-│   │   ├── __init__.py   # Router registration
-│   │   ├── channels.py   # Channel CRUD (replaces streams.py)
-│   │   ├── schedules.py  # Schedule management
-│   │   ├── jellyfin.py   # Jellyfin integration endpoints
-│   │   ├── livetv.py     # M3U/XMLTV generation + stream proxy route
-│   │   └── schemas.py    # Pydantic request/response models
+│   │   ├── __init__.py        # Router registration
+│   │   ├── channels.py        # Channel CRUD
+│   │   ├── collections.py     # Collection CRUD + import + verify + thumbnail
+│   │   ├── schedules.py       # Schedule management
+│   │   ├── jellyfin.py        # Jellyfin integration endpoints (browse, image proxy, etc.)
+│   │   ├── livetv.py          # M3U/XMLTV generation + stream proxy route
+│   │   └── schemas.py         # Pydantic request/response models
 │   ├── core/             # Core functionality
-│   │   ├── config.py     # Configuration management
-│   │   ├── database.py   # Database initialization + migrations
+│   │   ├── config.py          # Configuration management
+│   │   ├── database.py        # Database initialization + migrations
 │   │   └── logging_config.py  # Logging setup (get_logger)
 │   ├── integrations/     # External integrations
-│   │   └── jellyfin.py   # JellyfinClient with full auth
+│   │   └── jellyfin.py        # JellyfinClient with full auth
 │   ├── models/           # SQLAlchemy models
-│   │   ├── channel.py          # Channel model
-│   │   ├── channel_library.py  # Channel ↔ Library join
-│   │   ├── genre_filter.py     # Genre filters per channel
-│   │   └── schedule_entry.py   # Persistent schedule entries
+│   │   ├── channel.py
+│   │   ├── channel_library.py
+│   │   ├── collection.py        # Collection entity
+│   │   ├── collection_item.py   # Items within a collection
+│   │   ├── genre_filter.py
+│   │   └── schedule_entry.py
 │   ├── services/         # Business logic services
+│   │   ├── collection_service.py  # NFO/thumbnail enrichment + file verify
 │   │   ├── schedule_generator.py  # Genre-based schedule builder + NFO parsing
 │   │   ├── stream_proxy.py        # ffmpeg stream proxy with offset
 │   │   └── scheduler.py           # APScheduler background jobs
 │   ├── web/              # Web interface
 │   │   ├── php/          # PHP application
 │   │   │   ├── includes/
-│   │   │   │   ├── api_client.php   # PHP API client
+│   │   │   │   ├── api_client.php   # PHP API client (server-side calls)
 │   │   │   │   └── database.php     # SQLite PDO helper
 │   │   │   ├── pages/
-│   │   │   │   ├── channels.php              # Channel management list
-│   │   │   │   └── channel_edit.php          # Channel editor (libraries, genres, schedule)
-│   │   │   └── config/
-│   │   │       ├── config.php    # Constants (API_BASE_URL, APP_NAME etc)
-│   │   │       └── ports.php     # Port config (NO hardcoded IPs)
-│   │   └── static/       # CSS, JS, images
+│   │   │   │   ├── channels.php         # Channel management list
+│   │   │   │   ├── channel_edit.php     # Channel editor (libraries, genres, schedule, Live TV)
+│   │   │   │   ├── collections.php      # Collection list + import boxset modal
+│   │   │   │   └── collection_edit.php  # Browse + cart + save (with series drill-down)
+│   │   │   ├── config/
+│   │   │   │   ├── config.php    # Constants (API_BASE_URL, APP_NAME etc)
+│   │   │   │   └── ports.php     # Port config + getApiBaseUrl() + getClientApiBaseUrl()
+│   │   │   └── static/
+│   │   │       └── css/
+│   │   │           └── style.css  # Shared dark-theme stylesheet (all pages link here)
+│   │   └── setup.php     # Config wizard (writes .env)
 │   └── main.py           # Application entry point (starts scheduler)
 ├── config/               # Configuration files
 ├── data/
@@ -94,6 +108,8 @@ jellystream/
 ├── tests/
 ├── setup.sh              # Automated setup script
 ├── start.sh              # Quick start script
+├── start-php.sh          # PHP built-in dev server (binds 0.0.0.0)
+├── start-lighttpd.sh     # Lighttpd production server (binds 0.0.0.0)
 └── run.py                # Application launcher
 ```
 
@@ -107,9 +123,9 @@ jellystream/
 - channel_number: String(10) nullable  # e.g. "100.1"
 - enabled: Boolean default=True
 - schedule_type: String(20) default="genre_auto"  # "manual" | "genre_auto"
-- tuner_host_id: String(255) nullable   # Jellyfin TunerHost registration ID
-- listing_provider_id: String(255) nullable  # Jellyfin ListingProvider ID
-- schedule_generated_through: DateTime nullable  # furthest end_time in schedule
+- tuner_host_id: String(255) nullable
+- listing_provider_id: String(255) nullable
+- schedule_generated_through: DateTime nullable
 - created_at, updated_at: DateTime server_default
 ```
 
@@ -117,8 +133,8 @@ jellystream/
 ```python
 - id: Integer (PK)
 - channel_id: Integer FK → channels.id CASCADE DELETE
-- library_id: String(255) NOT NULL   # Jellyfin library/view ID
-- library_name: String(255) NOT NULL  # cached for display
+- library_id: String(255) NOT NULL
+- library_name: String(255) NOT NULL
 - collection_type: String(50) NOT NULL  # "movies" | "tvshows" | "mixed"
 ```
 
@@ -126,7 +142,7 @@ jellystream/
 ```python
 - id: Integer (PK)
 - channel_id: Integer FK → channels.id CASCADE DELETE
-- genre: String(100) NOT NULL   # e.g. "Sci-Fi", "Horror"
+- genre: String(100) NOT NULL
 - content_type: String(20) default="both"  # "movie" | "episode" | "both"
 ```
 
@@ -135,27 +151,56 @@ jellystream/
 - id: Integer (PK)
 - channel_id: Integer FK → channels.id CASCADE DELETE
 - title: String(255) NOT NULL
-- series_name: String(255) nullable
-- season_number: Integer nullable
-- episode_number: Integer nullable
+- series_name, season_number, episode_number: nullable
 - media_item_id: String(255) NOT NULL   # Jellyfin item ID
 - library_id: String(255) NOT NULL
 - item_type: String(50) NOT NULL   # "Movie" | "Episode"
-- start_time: DateTime NOT NULL
-- end_time: DateTime NOT NULL   # start_time + duration
+- start_time, end_time: DateTime NOT NULL
 - duration: Integer NOT NULL   # seconds
 - genres: Text nullable   # JSON array string
 - file_path: Text nullable   # local path for direct file seek
-- description: Text nullable   # <plot> from .nfo sidecar
-- content_rating: String(20) nullable   # <mpaa> from .nfo e.g. "TV-14"
+- description: Text nullable   # <plot> from .nfo
+- content_rating: String(20) nullable   # <mpaa> from .nfo
 - thumbnail_path: Text nullable   # absolute path to .jpg sidecar
 - air_date: String(20) nullable   # "YYYY-MM-DD" from <aired> in .nfo
 - created_at: DateTime server_default
 # Index on (channel_id, start_time) for fast EPG lookups
 ```
 
-New columns are added via safe `ALTER TABLE` migrations in `database.py`
-(silently ignored if the column already exists).
+New columns added via safe `ALTER TABLE` migrations in `database.py` (silently ignored if column exists).
+
+### Collection (`app/models/collection.py`)
+```python
+- id: Integer (PK)
+- name: String(255) NOT NULL
+- description: Text nullable
+- jellyfin_id: String(255) nullable  # set when imported from a Jellyfin boxset
+- created_at, updated_at: DateTime server_default
+```
+
+### CollectionItem (`app/models/collection_item.py`)
+Mirrors ScheduleEntry non-time fields for future Phase 2 channel integration.
+```python
+- id: Integer (PK)
+- collection_id: Integer FK → collections.id CASCADE DELETE (indexed)
+- media_item_id: String(255) NOT NULL  # Jellyfin item ID, or str(collection.id) for type="Collection"
+- item_type: String(50) NOT NULL  # "Movie" | "Episode" | "Series" | "Season" | "Collection"
+- title: String(255) NOT NULL
+- series_name, season_number, episode_number: nullable
+- library_id: String(255) NOT NULL  # "" for Collection-type items
+- duration: Integer nullable   # seconds
+- genres: Text nullable        # JSON array
+- file_path: Text nullable     # local path for verify + seek
+- thumbnail_path: Text nullable
+- description, content_rating, air_date: nullable
+- sort_order: Integer default=0
+- created_at: DateTime server_default
+# Composite index on (collection_id, item_type)
+```
+
+Collections can be nested: `item_type="Collection"` stores the referenced
+collection's `id` (as a string) in `media_item_id`, with `library_id=""`.
+New tables created by `create_all()` — no ALTER TABLE migrations needed.
 
 ## API Endpoints
 
@@ -168,7 +213,6 @@ See [docs/API.md](docs/API.md) for comprehensive documentation.
 - `GET /api` — API info
 - `GET /health` — Health check (returns `status` + `public_url`)
 - `GET /docs` — Swagger UI
-- `GET /redoc` — ReDoc
 
 ### Channels (`app/api/channels.py`)
 - `GET /api/channels/` — List all channels
@@ -186,10 +230,28 @@ See [docs/API.md](docs/API.md) for comprehensive documentation.
 - `POST /api/schedules/` — Create manual entry (JSON body: CreateScheduleEntryRequest)
 - `DELETE /api/schedules/{id}` — Delete entry
 
+### Collections (`app/api/collections.py`)
+**CRITICAL: `/thumbnail/{id}` MUST be registered BEFORE `/{collection_id}`**
+- `GET /api/collections/` — List all (id, name, item_count, jellyfin_id)
+- `GET /api/collections/{id}` — Collection + all items
+- `POST /api/collections/` — Create (JSON body: CreateCollectionRequest)
+- `PUT /api/collections/{id}` — Update metadata + replace items
+- `DELETE /api/collections/{id}` — Delete (cascade items)
+- `POST /api/collections/import/{boxset_id}` — Import Jellyfin boxset as collection
+- `GET /api/collections/{id}/verify` — Check file existence; re-query Jellyfin for moved files
+- `DELETE /api/collections/{id}/items/{item_id}` — Remove one item
+- `GET /api/collections/thumbnail/{item_id}` — Serve local thumbnail_path for a CollectionItem
+
 ### Jellyfin Integration (`app/api/jellyfin.py`)
 - `GET /api/jellyfin/users` — Get current user
-- `GET /api/jellyfin/libraries` — Get all libraries (views)
+- `GET /api/jellyfin/libraries` — Get all libraries (views); items keyed by `Id` (not `ItemId`)
+- `GET /api/jellyfin/genres/{library_id}` — Genre names present in a library
 - `GET /api/jellyfin/items/{parent_id}` — Get items with pagination/sorting/genre filter
+- `GET /api/jellyfin/boxsets` — List Jellyfin boxset collections
+- `GET /api/jellyfin/browse?library_id=&type=Movie&search=&year_from=&year_to=&limit=&offset=` — Paginated browse (admin endpoint, returns Path field)
+- `GET /api/jellyfin/series/{series_id}/seasons` — Seasons for a series
+- `GET /api/jellyfin/seasons/{season_id}/episodes` — Episodes for a season (with Path, duration)
+- `GET /api/jellyfin/items/{item_id}/image?type=Primary&maxWidth=400` — Proxy Jellyfin image (hides API key from browser)
 
 ### Live TV (`app/api/livetv.py`)
 **CRITICAL: `/all` routes MUST be registered BEFORE `/{channel_id}` routes**
@@ -207,23 +269,25 @@ See [docs/API.md](docs/API.md) for comprehensive documentation.
 class LibraryConfig(BaseModel):
     library_id: str
     library_name: str
-    collection_type: str  # "movies" | "tvshows"
+    collection_type: str  # "movies" | "tvshows" | "mixed"
 
 class GenreFilterConfig(BaseModel):
     genre: str
     content_type: str = "both"
+    filter_type: str = "include"  # "include" | "exclude"
 
 class CreateChannelRequest(BaseModel):
     name: str
     description: Optional[str] = None
     channel_number: Optional[str] = None
+    channel_type: str = "video"
     schedule_type: str = "genre_auto"
     libraries: List[LibraryConfig]
     genre_filters: Optional[List[GenreFilterConfig]] = None
 
 class UpdateChannelRequest(BaseModel):
     # all fields optional
-    name, description, channel_number, enabled, schedule_type
+    name, description, channel_number, enabled, channel_type, schedule_type
     libraries: Optional[List[LibraryConfig]] = None
     genre_filters: Optional[List[GenreFilterConfig]] = None
 
@@ -236,6 +300,29 @@ class CreateScheduleEntryRequest(BaseModel):
     start_time: str  # ISO datetime
     duration: int   # seconds
     # optional: series_name, season_number, episode_number, genres
+
+class CollectionItemInput(BaseModel):
+    media_item_id: str
+    item_type: str          # "Movie" | "Episode" | "Series" | "Season" | "Collection"
+    title: str
+    library_id: str         # "" for Collection-type items
+    series_name: Optional[str] = None
+    season_number: Optional[int] = None
+    episode_number: Optional[int] = None
+    duration: Optional[int] = None
+    genres: Optional[str] = None   # JSON array string
+    file_path: Optional[str] = None
+    sort_order: int = 0
+
+class CreateCollectionRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    items: List[CollectionItemInput] = []
+
+class UpdateCollectionRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    items: Optional[List[CollectionItemInput]] = None  # if present, replaces all items
 ```
 
 ## Services
@@ -259,6 +346,28 @@ for `description` / `content_rating` / `air_date`, and looks for `<basename>.jpg
 
 **MEDIA_PATH_MAP**: Format `/jellyfin/prefix:/local/prefix` — rewrites Jellyfin server
 paths to locally accessible paths. Leave blank when both machines share the same mount.
+
+### Collection Service (`app/services/collection_service.py`)
+
+Provides NFO parsing, thumbnail finding, and file verification for CollectionItems.
+
+**NFO conventions by item type:**
+- `Movie` → `movie.nfo` in same dir (fallback: `{basename}.nfo`)
+- `Series` → `tvshow.nfo` in series root dir (`file_path` is the directory)
+- `Season` → `tvshow.nfo` in parent of season dir
+- `Episode` → `{basename}.nfo` next to video file
+
+**Thumbnail conventions by item type:**
+- `Movie` → `folder.jpg` | `{basename}.jpg` | `{basename}-thumb.jpg`
+- `Series` → `folder.jpg` | `poster.jpg` in series root
+- `Season` → `season{NN:02d}-poster.jpg` in series root | `folder.jpg` in season dir
+- `Episode` → `{basename}-thumb.jpg` | `{basename}.jpg` | `folder.jpg`
+
+**`enrich_item(item: dict) -> dict`**: Runs NFO parse + thumbnail find, returns enriched dict.
+
+**`verify_collection(items, client)`**: For each item — checks `os.path.isfile(file_path)`;
+if missing, re-queries Jellyfin for new path; returns status: `ok` | `moved` | `deleted` | `no_path`.
+Items with `item_type="Collection"` return `no_path` (no file to verify).
 
 ### Stream Proxy (`app/services/stream_proxy.py`)
 
@@ -321,6 +430,7 @@ Authorization: MediaBrowser Token="api_key", Client="JellyStream", Device="Jelly
 - Series → Seasons (parent_id=SeriesId, recursive=false)
 - Season → Episodes (parent_id=SeasonId, recursive=false)
 - For genre-based fetching: recursive=true with Genres= filter
+- Library views endpoint returns items with key `Id` (NOT `ItemId`)
 
 ### User ID Auto-Detection
 If `JELLYFIN_USER_ID` not set → calls `/Users` → uses first user's Id automatically.
@@ -331,16 +441,19 @@ POST payload to `/LiveTv/TunerHosts` — omitting them causes a 500 deserializat
 
 ### Global vs Per-Channel Registration
 One tuner pointing to `m3u/all` covers all channels. New channels appear automatically
-in Jellyfin without re-registration. The `register-livetv` endpoint cleans up any
-existing `tuner_host_id` / `listing_provider_id` before creating new ones.
+in Jellyfin without re-registration.
 
 ### JellyfinClient Methods (`app/integrations/jellyfin.py`)
 - `ensure_user_id()` — Auto-detect and cache user ID
 - `get_current_user()` — First user info
-- `get_libraries()` — All user views
+- `get_libraries()` — All user views (returns list with `Id`, `Name`, `CollectionType`)
+- `get_genres(library_id)` — Sorted list of genre names present in a library
 - `get_library_items(...)` — Paginated/sorted items
 - `get_item_info(item_id)` — Item metadata
 - `get_stream_url(item_id)` — `{base_url}/Videos/{item_id}/stream?api_key={key}`
+- `get_boxsets()` — All Jellyfin boxset collections
+- `browse_items(parent_id, include_types, fields, search_term, start_year, end_year, limit, start_index, recursive)` — Admin `/Items` endpoint browse
+- `get_item_image(item_id, image_type, max_width) -> tuple[bytes, str]` — Raw image bytes for proxying
 - `register_tuner_host(url, friendly_name, ...)` — Register M3U tuner in Jellyfin Live TV
 - `unregister_tuner_host(tuner_host_id)`
 - `register_listing_provider(type, xmltv_url, friendly_name)` — Register EPG
@@ -363,6 +476,9 @@ PORT=8000
 # Using localhost will cause Jellyfin registration to fail.
 JELLYSTREAM_PUBLIC_URL=http://192.168.1.100:8000
 
+# Preferred audio language (ISO 639-2 code, e.g. eng, jpn, fra)
+PREFERRED_AUDIO_LANGUAGE=eng
+
 # Path prefix rewrite: /jellyfin/prefix:/local/prefix
 # Leave blank when JellyStream and Jellyfin share the same mount point.
 MEDIA_PATH_MAP=
@@ -384,28 +500,65 @@ SCHEDULER_ENABLED=true
 ### API Contract
 - **All POST/PUT** send `Content-Type: application/json` with `JSON.stringify(data)` body
 - **Never use** `URLSearchParams` as body for POST/PUT
-- `api_client.php` correctly sends `json_encode($data)` as body
+- `api_client.php` uses `getApiBaseUrl()` for server-side PHP calls (localhost is fine)
+- **Client-side JS** must use `getClientApiBaseUrl()` — uses `$_SERVER['HTTP_HOST']` so
+  the URL resolves correctly from remote browsers, not just from the server itself
 - `healthCheck()` calls `/health` (root), not `/api/health` — strips `/api` suffix from base URL
 
 ### Port Configuration (`config/ports.php`)
-- `API_BASE_URL` must NOT use hardcoded IPs
-- Use `$_SERVER['HTTP_HOST']` or environment variable
-- Defaults: `http://localhost:8000/api`
+Two functions for different call contexts:
+- `getApiBaseUrl()` — server-side PHP (api_client.php); uses `localhost` or `JELLYSTREAM_API_HOST`
+- `getClientApiBaseUrl()` — embedded in page JavaScript; uses `$_SERVER['HTTP_HOST']` host portion
+  so remote browsers hit the correct IP (not localhost on their own machine)
+- All pages use `getClientApiBaseUrl()` in `const API_BASE = '...'` JS declarations
+- All browser-rendered `href` links to the API also use `getClientApiBaseUrl()`
+
+### Shared CSS (`static/css/style.css`)
+Single stylesheet linked by all pages via `<link rel="stylesheet" href="/static/css/style.css">`.
+Contains: body/container, `.card`, `.btn` variants, form inputs, tables, `.badge` variants,
+`.modal`, `.toggle-row`/`.switch`, `.links`/`.link-btn`, status messages, empty state, form-actions.
+Page-specific layout (grids, panels, drill-down) stays in inline `<style>` blocks only.
 
 ### Key PHP Files
-- `api_client.php` — HTTP client with all endpoint wrappers
-- `config.php` — Constants: `API_BASE_URL`, `APP_NAME`, `API_TIMEOUT`
-- `ports.php` — Dynamic host/port resolution (no hardcoded IPs)
-- `index.php` — Dashboard: channels overview, what's playing now
+- `includes/api_client.php` — HTTP client with all endpoint wrappers (channels, collections, jellyfin)
+- `config/config.php` — Constants: `API_BASE_URL`, `APP_NAME`, `API_TIMEOUT`
+- `config/ports.php` — `getApiBaseUrl()` + `getClientApiBaseUrl()` (no hardcoded IPs)
+- `index.php` — Dashboard: channels overview, what's playing now, Collections quick link
 - `pages/channels.php` — Channel management list
 - `pages/channel_edit.php` — Channel editor with:
   - Library multi-select (add multiple Jellyfin libraries)
-  - Genre filter list (genre name + content type)
+  - Genre filter list with include/exclude and content type
   - Schedule type toggle (Manual vs Auto/Genre)
   - Regenerate Schedule button (`reset=true` — wipes and rebuilds from now)
   - Register/Unregister with Jellyfin Live TV
   - Localhost warning banner when public URL resolves to local address
+- `pages/collections.php` — Collection list: table with Name/Source/Items/Actions,
+  inline verify results per row, Import Jellyfin Boxset modal
+- `pages/collection_edit.php` — Two-column browse + cart + save:
+  - Left: library picker + 📦 Collections toggle; sub-tabs (Movies/Series) auto-shown
+    only for `mixed`/`boxsets` libraries; library type auto-detected from `data-type` attribute
+  - Browse modes: Jellyfin grid (movies/series/seasons/episodes drill-down) or internal collections list
+  - Right: sticky cart panel with type-badges, thumbnails, remove buttons; name/description; Save
+  - Collection items show `📦` icon; `item_type="Collection"` stores sub-collection ID
 - `setup.php` — Config wizard (writes `.env`)
+
+### collection_edit.php JS Architecture
+```javascript
+const cart = new Map();        // media_item_id (string) → item data
+let browseState = {
+    libraryId, type,           // type: 'Movie' | 'Series' | 'Collection'
+    search, yearFrom, yearTo,
+    page, limit, totalItems,
+    mode,                      // 'browse' | 'seasons' | 'episodes'
+    seriesId, seriesTitle, seasonId, seasonTitle, seasonNumber, seriesLibraryId,
+};
+// Key functions: onLibraryChange(), setType('Collection'), setSubType('Movie'|'Series'),
+// browse(), drillSeries(), drillSeason(), browseCollections(), renderCollectionList(),
+// toggleCollectionInCart(), renderCart(), saveCollection()
+```
+
+`renderCart()` always does `container.innerHTML = ''` first (never uses `getElementById`
+on elements it may have already destroyed).
 
 ## Current Status
 
@@ -415,6 +568,7 @@ SCHEDULER_ENABLED=true
 - ffmpeg stream proxy: H.264 1080p / AAC stereo, time-offset seeking
 - Direct file access (faster seek), HTTP fallback
 - Kodi `.nfo` + `.jpg` sidecar parsing → stored in `ScheduleEntry`
+- XMLTV: `<title>` = series name, `<sub-title>` = episode title for TV episodes
 - XMLTV enriched with `<desc>`, `<icon>`, `<date>`, `<rating>`
 - Thumbnail serving endpoint (`/api/livetv/thumbnail/{entry_id}`)
 - HEAD probe endpoint for Jellyfin stream compatibility
@@ -423,8 +577,21 @@ SCHEDULER_ENABLED=true
 - `JELLYSTREAM_PUBLIC_URL` used in all M3U stream + XMLTV icon URLs
 - Logging in all modules
 
+### ✅ Phase 1.5 — Collections (complete)
+- `Collection` + `CollectionItem` models (new DB tables, no migrations needed)
+- Full collection CRUD API (`/api/collections/`)
+- Jellyfin boxset import: fetches items via admin `/Items`, enriches with NFO/thumbnails
+- Browse UI: library picker auto-detects content type from `CollectionType`; sub-tabs only for mixed
+- Series → Season → Episode drill-down with per-level add buttons and "Add whole season"
+- Collections-in-Collections: `item_type="Collection"` references another collection by ID
+- File verification: checks local path, re-queries Jellyfin if missing, reports moved/deleted
+- Image proxy endpoint (`/api/jellyfin/items/{id}/image`) keeps Jellyfin API key server-side
+- Shared `static/css/style.css` stylesheet
+- `getClientApiBaseUrl()` fixes JS fetch from remote browsers (HTTP_HOST-based, not localhost)
+- Both frontend servers bind to `0.0.0.0` for network access
+
 ### 🚧 Planned (Phase 2+)
-- Full web UI with templates and consistent layout
+- Collections as channel content source (Phase 2 integration)
 - Channel dashboard with "now playing" and "up next"
 - Episode/movie deselection per channel
 - Filler content: commercials, bumpers, static image, next-show-immediate
@@ -436,8 +603,41 @@ SCHEDULER_ENABLED=true
 ## Known Issues / Design Decisions
 
 ### Route Ordering
-FastAPI matches routes in registration order. Always register `/all` literal routes
-BEFORE `/{id}` parameterised routes in `livetv.py` or "all" matches as an integer.
+FastAPI matches routes in registration order. Always register literal routes BEFORE
+parameterised routes. Critical cases:
+- `livetv.py`: `/m3u/all`, `/xmltv/all`, `/thumbnail/{id}` BEFORE `/{channel_id}` variants
+- `collections.py`: `/thumbnail/{item_id}` BEFORE `/{collection_id}`
+
+### XMLTV Title Format
+TV episodes: `<title>` carries the **series name**, `<sub-title>` carries the episode title.
+Movies: `<title>` only. This matches the XMLTV spec and Jellyfin's guide display.
+
+### getClientApiBaseUrl() vs getApiBaseUrl()
+PHP server-side calls use `getApiBaseUrl()` (localhost). Browser JS must use
+`getClientApiBaseUrl()` which extracts the host from `$_SERVER['HTTP_HOST']` so
+remote browsers call the server's IP, not their own localhost. Set
+`JELLYSTREAM_API_HOST` env var to override both (for reverse-proxy setups).
+
+### Jellyfin Library Views — Key Name
+`GET /Users/{id}/Views` returns items with key `Id` (not `ItemId`).
+PHP must use `$lib['Id']` when reading library ID from the API response.
+
+### PHP Frontend Server Binding
+Both `start-php.sh` and `start-lighttpd.sh` must bind to `0.0.0.0` (not `localhost`)
+to be accessible from other machines on the network.
+- `start-php.sh`: `PHP_HOST="0.0.0.0"` → `php -S 0.0.0.0:8080`
+- `start-lighttpd.sh`: `server.bind = "0.0.0.0"` in generated config
+
+### Collections-in-Collections
+`item_type="Collection"` items store the referenced collection's integer ID as a
+string in `media_item_id`, and `library_id=""`. The `verify_collection` service
+returns `status="no_path"` for these (no file to check) — this is expected.
+
+### renderCart() DOM Safety
+`renderCart()` always resets `container.innerHTML = ''` first, then repopulates.
+It never relies on `getElementById` for elements that were children of the container
+(they get destroyed by the innerHTML reset). The empty-state message is recreated
+inline (`container.innerHTML = '<div class="cart-empty">...'`) rather than toggled.
 
 ### ffmpeg Stream Proxy
 ```
@@ -448,14 +648,10 @@ ffmpeg -ss {offset} -probesize 262144 -analyzeduration 1000000 -fflags nobuffer
        -c:a aac -b:a 192k -ac 2
        -f mpegts pipe:1
 ```
-- `-ss` before `-i` = fast input seek
-- `-probesize 262144` + `-analyzeduration 1000000` = reduced startup delay
-- `-tune zerolatency` = minimises encoder buffering
-- H.264 + AAC ensures broad client compatibility (Jellyfin, Android TV, VLC)
 
 ### HTTP Header Encoding
 Starlette encodes response headers as latin-1. Titles with non-ASCII characters
-(e.g. en-dash `–`) must be ASCII-encoded before use in `X-Entry-Title` header:
+must be ASCII-encoded before use in `X-Entry-Title` header:
 ```python
 entry.title.encode("ascii", errors="replace").decode("ascii")
 ```
@@ -465,8 +661,8 @@ Uses `/Items` (admin endpoint) instead of `/Users/{id}/Items` so that the `Path`
 field is returned regardless of the configured user's permission level.
 
 ### Jellyfin EPG Refresh
-The "Refresh Guide Data" button on the guide page processes cached data.
-To force an actual re-download: Dashboard → Scheduled Tasks → **Refresh Guide** → Run.
+The "Refresh Guide Data" button processes cached data.
+To force a re-download: Dashboard → Scheduled Tasks → **Refresh Guide** → Run.
 XMLTV responses include `Cache-Control: no-cache` headers.
 
 ### Schedule Reset vs Append
@@ -487,12 +683,20 @@ The UI "Regenerate Schedule" button always passes `reset=true`.
 ## Running the Application
 
 ```bash
+# Backend
 source venv/bin/activate
 python run.py
-# Access: http://localhost:8000
-# API docs: http://localhost:8000/docs
-# M3U: http://localhost:8000/api/livetv/m3u/all
-# XMLTV: http://localhost:8000/api/livetv/xmltv/all
+# API: http://localhost:8000  |  Docs: http://localhost:8000/docs
+
+# Frontend (dev)
+./start-php.sh        # PHP built-in server, port 8080, binds 0.0.0.0
+
+# Frontend (production)
+./start-lighttpd.sh   # Lighttpd + FastCGI, port 8080, binds 0.0.0.0
+
+# Web UI: http://<server-ip>:8080
+# M3U:    http://<server-ip>:8000/api/livetv/m3u/all
+# XMLTV:  http://<server-ip>:8000/api/livetv/xmltv/all
 ```
 
 ## References
@@ -508,6 +712,6 @@ python run.py
 
 ---
 
-*Last Updated: 2026-02-22*
-*Version: 0.4.0*
-*Status: Phase 1 complete — Phase 2 planning*
+*Last Updated: 2026-02-23*
+*Version: 0.5.0*
+*Status: Phase 1 + Collections (1.5) complete — Phase 2 planning*

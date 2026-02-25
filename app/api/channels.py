@@ -9,6 +9,7 @@ from app.core.database import get_db
 from app.core.logging_config import get_logger
 from app.models.channel import Channel
 from app.models.channel_library import ChannelLibrary
+from app.models.channel_collection_source import ChannelCollectionSource
 from app.models.genre_filter import GenreFilter
 from app.api.schemas import CreateChannelRequest, UpdateChannelRequest, RegisterLiveTVRequest
 
@@ -54,6 +55,16 @@ async def _attach_relations(channel_id: int, d: dict, db: AsyncSession) -> dict:
     d["genre_filters"] = [
         {"genre": gf.genre, "content_type": gf.content_type, "filter_type": gf.filter_type}
         for gf in gf_result.scalars().all()
+    ]
+
+    cs_result = await db.execute(
+        select(ChannelCollectionSource).where(
+            ChannelCollectionSource.channel_id == channel_id
+        )
+    )
+    d["collection_sources"] = [
+        {"collection_id": cs.collection_id, "collection_name": cs.collection_name}
+        for cs in cs_result.scalars().all()
     ]
     return d
 
@@ -141,6 +152,14 @@ async def create_channel(data: CreateChannelRequest, db: AsyncSession = Depends(
             filter_type=gf.filter_type,
         ))
 
+    # Persist collection sources
+    for cs in (data.collection_sources or []):
+        db.add(ChannelCollectionSource(
+            channel_id=channel.id,
+            collection_id=cs.collection_id,
+            collection_name=cs.collection_name,
+        ))
+
     await db.commit()
     await db.refresh(channel)
     logger.info(f"create_channel: created channel '{channel.name}' (id={channel.id})")
@@ -221,6 +240,19 @@ async def update_channel(
                 genre=gf.genre,
                 content_type=gf.content_type,
                 filter_type=gf.filter_type,
+            ))
+
+    if data.collection_sources is not None:
+        await db.execute(
+            delete(ChannelCollectionSource).where(
+                ChannelCollectionSource.channel_id == channel_id
+            )
+        )
+        for cs in data.collection_sources:
+            db.add(ChannelCollectionSource(
+                channel_id=channel_id,
+                collection_id=cs.collection_id,
+                collection_name=cs.collection_name,
             ))
 
     await db.commit()

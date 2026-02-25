@@ -20,6 +20,12 @@ class GenreFilterConfig(BaseModel):
     filter_type: str = "include"  # "include" | "exclude"
 
 
+class CollectionSourceConfig(BaseModel):
+    """A JellyStream collection attached to a channel as a content source."""
+    collection_id: int
+    collection_name: str
+
+
 class CreateChannelRequest(BaseModel):
     """Request body for POST /api/channels/"""
     name: str
@@ -27,8 +33,9 @@ class CreateChannelRequest(BaseModel):
     channel_number: Optional[str] = None
     channel_type: str = "video"        # "video" | "music" (music planned)
     schedule_type: str = "genre_auto"  # "manual" | "genre_auto"
-    libraries: List[LibraryConfig]
+    libraries: List[LibraryConfig] = []
     genre_filters: Optional[List[GenreFilterConfig]] = None
+    collection_sources: Optional[List[CollectionSourceConfig]] = None
 
 
 class UpdateChannelRequest(BaseModel):
@@ -41,6 +48,7 @@ class UpdateChannelRequest(BaseModel):
     schedule_type: Optional[str] = None
     libraries: Optional[List[LibraryConfig]] = None
     genre_filters: Optional[List[GenreFilterConfig]] = None
+    collection_sources: Optional[List[CollectionSourceConfig]] = None
 
 
 # ─── Schedule Schemas ─────────────────────────────────────────────────────────
@@ -69,6 +77,37 @@ class UpdateScheduleEntryRequest(BaseModel):
     series_name: Optional[str] = None
     season_number: Optional[int] = None
     episode_number: Optional[int] = None
+
+
+# ─── Collection Schemas ───────────────────────────────────────────────────────
+
+class CollectionItemInput(BaseModel):
+    """One media item to add to a collection (sent by the browse UI)."""
+    media_item_id: str
+    item_type: str                     # "Movie" | "Series" | "Season" | "Episode"
+    title: str
+    library_id: str
+    series_name: Optional[str] = None
+    season_number: Optional[int] = None
+    episode_number: Optional[int] = None
+    duration: Optional[int] = None     # seconds
+    genres: Optional[str] = None       # JSON array string
+    file_path: Optional[str] = None    # local path from Jellyfin Path field
+    sort_order: int = 0
+
+
+class CreateCollectionRequest(BaseModel):
+    """Request body for POST /api/collections/"""
+    name: str
+    description: Optional[str] = None
+    items: List[CollectionItemInput] = []
+
+
+class UpdateCollectionRequest(BaseModel):
+    """Request body for PUT /api/collections/{id}"""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    items: Optional[List[CollectionItemInput]] = None   # if present, replaces all items
 
 
 # ─── Live TV Registration Schemas ─────────────────────────────────────────────

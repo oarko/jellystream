@@ -103,6 +103,24 @@ $public_url_is_local = in_array(
         .status-err { background: #7f0000; color: #ef9a9a; }
         .hint { font-size: 12px; color: #666; margin-top: 4px; }
         #genre-section { display: none; }
+
+        @media(max-width:640px) {
+            /* Collapse the 2-col tuner/bitrate grid */
+            div[style*="grid-template-columns:1fr 1fr"] { display: block !important; }
+            /* Collapse the 3-col toggle grid */
+            div[style*="grid-template-columns:1fr 1fr 1fr"] { display: flex !important; flex-wrap: wrap !important; gap: 10px !important; }
+            /* Genre add row: stack selects + button */
+            .genre-add-row { flex-direction: column; align-items: stretch; }
+            .genre-add-row select,
+            .genre-add-row button { width: 100%; }
+            /* Library add row */
+            .add-row { flex-wrap: wrap; }
+            .add-row button { width: 100%; }
+            /* Action buttons */
+            .form-actions { flex-direction: column; align-items: stretch; }
+            .form-actions .btn,
+            .form-actions a.btn { text-align: center; width: 100%; }
+        }
     </style>
 </head>
 <body>
@@ -195,6 +213,30 @@ $public_url_is_local = in_array(
                 <?php endforeach; ?>
             </select>
             <button onclick="addLib()">+ Add Library</button>
+        </div>
+
+        <!-- Collection Sources -->
+        <h2 style="margin-top:24px;">Collection Sources</h2>
+        <div class="hint" style="margin-bottom:12px;">
+            Optionally use JellyStream Collections as content sources alongside or instead of libraries.
+            Genre filters apply to collection items using their stored metadata.
+        </div>
+        <ul class="lib-list" id="col-src-list">
+            <?php foreach (($channel['collection_sources'] ?? []) as $cs): ?>
+            <li class="lib-item"
+                data-id="<?php echo intval($cs['collection_id']); ?>"
+                data-name="<?php echo htmlspecialchars($cs['collection_name']); ?>">
+                <span class="lib-name"><?php echo htmlspecialchars($cs['collection_name']); ?></span>
+                <span class="lib-type">Collection</span>
+                <button onclick="removeCollectionSource(this)">✕</button>
+            </li>
+            <?php endforeach; ?>
+        </ul>
+        <div class="add-row">
+            <select id="col-src-picker">
+                <option value="">— Loading collections… —</option>
+            </select>
+            <button onclick="addCollectionSource()">+ Add Collection</button>
         </div>
 
         <!-- Genre Filters -->
@@ -394,7 +436,7 @@ $public_url_is_local = in_array(
 <script>
 const IS_EDIT    = <?php echo $is_edit ? 'true' : 'false'; ?>;
 const CHANNEL_ID = <?php echo $channel_id ?? 'null'; ?>;
-const API_BASE   = '<?php echo getApiBaseUrl(); ?>';
+const API_BASE   = '<?php echo getClientApiBaseUrl(); ?>';
 
 // ── Channel type ──────────────────────────────────────────────────────────────
 // CollectionTypes valid for Video channels
@@ -583,6 +625,62 @@ function getGenreFilters() {
     }));
 }
 
+// ── Collection sources ────────────────────────────────────────────────────────
+async function loadCollections() {
+    const picker = document.getElementById('col-src-picker');
+    try {
+        const resp = await fetch(`${API_BASE}/collections/`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        picker.innerHTML = '<option value="">— Select a collection —</option>';
+        for (const col of (data || [])) {
+            const opt = document.createElement('option');
+            opt.value = col.id;
+            opt.dataset.name = col.name;
+            opt.textContent = col.name + (col.item_count ? ` (${col.item_count} items)` : '');
+            picker.appendChild(opt);
+        }
+        if ((data || []).length === 0) {
+            picker.innerHTML = '<option value="">— No collections yet —</option>';
+        }
+    } catch (e) {
+        picker.innerHTML = `<option value="">— Failed to load collections —</option>`;
+    }
+}
+
+function addCollectionSource() {
+    const picker = document.getElementById('col-src-picker');
+    const opt    = picker.options[picker.selectedIndex];
+    if (!opt || !opt.value) return;
+
+    const id   = opt.value;
+    const name = opt.dataset.name || opt.textContent;
+
+    // Prevent duplicates
+    for (const li of document.querySelectorAll('#col-src-list li')) {
+        if (li.dataset.id === id) { alert('Collection already added.'); return; }
+    }
+
+    const li = document.createElement('li');
+    li.className = 'lib-item';
+    li.dataset.id   = id;
+    li.dataset.name = name;
+    li.innerHTML = `<span class="lib-name">${esc(name)}</span><span class="lib-type">Collection</span><button onclick="removeCollectionSource(this)">✕</button>`;
+    document.getElementById('col-src-list').appendChild(li);
+    picker.selectedIndex = 0;
+}
+
+function removeCollectionSource(btn) {
+    btn.closest('li').remove();
+}
+
+function getCollectionSources() {
+    return [...document.querySelectorAll('#col-src-list li')].map(li => ({
+        collection_id:   parseInt(li.dataset.id),
+        collection_name: li.dataset.name,
+    }));
+}
+
 // ── Regenerate Schedule ───────────────────────────────────────────────────────
 async function regenerateSchedule() {
     const btn = document.getElementById('regen-btn');
@@ -617,17 +715,22 @@ async function saveChannel() {
     if (!name) { showStatus('Channel name is required.', false); return; }
 
     const libs = getLibraries();
-    if (!libs.length) { showStatus('Add at least one library.', false); return; }
+    const colSrcs = getCollectionSources();
+    if (!libs.length && !colSrcs.length) {
+        showStatus('Add at least one library or collection source.', false);
+        return;
+    }
 
     const payload = {
-        name:           name,
-        description:    document.getElementById('ch-desc').value.trim() || null,
-        channel_number: document.getElementById('ch-num').value.trim() || null,
-        enabled:        document.getElementById('ch-enabled').checked,
-        channel_type:   document.getElementById('ch-type').value,
-        schedule_type:  document.getElementById('ch-schedule-type').value,
-        libraries:      libs,
-        genre_filters:  getGenreFilters(),
+        name:               name,
+        description:        document.getElementById('ch-desc').value.trim() || null,
+        channel_number:     document.getElementById('ch-num').value.trim() || null,
+        enabled:            document.getElementById('ch-enabled').checked,
+        channel_type:       document.getElementById('ch-type').value,
+        schedule_type:      document.getElementById('ch-schedule-type').value,
+        libraries:          libs,
+        genre_filters:      getGenreFilters(),
+        collection_sources: colSrcs,
     };
 
     const url    = IS_EDIT ? `${API_BASE}/channels/${CHANNEL_ID}` : `${API_BASE}/channels/`;
@@ -753,6 +856,9 @@ function showLiveTVMsg(msg, ok) {
 // ── Initialisation ────────────────────────────────────────────────────────────
 // Filter the library picker based on current channel type
 filterLibraryPicker();
+
+// Load collections into the collection source picker
+loadCollections();
 
 // In edit mode: pre-load genres for all libraries already attached to the channel
 (async () => {

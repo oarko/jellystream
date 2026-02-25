@@ -52,6 +52,12 @@ $channels = $response['success'] ? ($response['data'] ?? []) : [];
         .alert { padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; }
         .alert-success { background: #1b5e20; color: #a5d6a7; }
         .libs { font-size: 12px; color: #888; }
+        @media(max-width:640px) {
+            .header { flex-direction: column; align-items: flex-start; gap: 10px; }
+            .header > div { width: 100%; flex-wrap: wrap; }
+            /* Hide the Libraries column on small screens */
+            th:nth-child(4), td:nth-child(4) { display: none; }
+        }
     </style>
 </head>
 <body>
@@ -73,6 +79,7 @@ $channels = $response['success'] ? ($response['data'] ?? []) : [];
             No channels yet. <a href="channel_edit.php" style="color:#00A4DC;">Create your first channel →</a>
         </div>
     <?php else: ?>
+    <div class="table-scroll">
     <table>
         <thead>
             <tr>
@@ -135,6 +142,7 @@ $channels = $response['success'] ? ($response['data'] ?? []) : [];
         <?php endforeach; ?>
         </tbody>
     </table>
+    </div><!-- /.table-scroll -->
     <?php endif; ?>
 </div>
 </body>

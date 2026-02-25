@@ -57,6 +57,7 @@ $current_config = $db->getEnvConfig();
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>JellyStream Setup</title>
+    <link rel="stylesheet" href="/static/css/style.css">
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -121,6 +122,11 @@ $current_config = $db->getEnvConfig();
         .back-link {
             color: #00A4DC;
             text-decoration: none;
+        }
+        @media(max-width:640px) {
+            body { padding: 10px; }
+            .card { padding: 16px; }
+            .btn { width: 100%; }
         }
     </style>
 </head>

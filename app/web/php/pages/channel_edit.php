@@ -690,7 +690,7 @@ async function regenerateSchedule() {
     status.textContent = 'Generating…';
 
     try {
-        const resp = await fetch(`<?php echo API_BASE_URL; ?>/channels/<?php echo (int)$channel_id; ?>/generate-schedule?days=7&reset=true`, {
+        const resp = await fetch(`${API_BASE}/channels/<?php echo (int)$channel_id; ?>/generate-schedule?days=7&reset=true`, {
             method: 'POST',
         });
         const data = await resp.json();

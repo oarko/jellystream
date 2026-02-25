@@ -295,14 +295,17 @@ async def _get_collection_pool(
                 seen_ids.add(item_id)
                 raw.append(item)
 
-    # Apply include genre filter
+    # Apply include genre filter.
+    # Items with no genres stored are passed through — they were manually curated
+    # into the collection and may simply lack genre metadata.
     if include_filters:
         include_genres_all: set = set()
         for gf in include_filters:
             include_genres_all.add(gf.genre)
         raw = [
             item for item in raw
-            if any(g in include_genres_all for g in (item.get("Genres") or []))
+            if not (item.get("Genres") or [])
+            or any(g in include_genres_all for g in item["Genres"])
         ]
 
     # Apply exclude genre filter

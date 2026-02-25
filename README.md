@@ -2,28 +2,52 @@
 
 A virtual TV channel generator built on top of Jellyfin. JellyStream creates 24/7 streaming channels with persistent, genre-based schedules, generates M3U playlists and XMLTV EPG data, and proxies video through ffmpeg with time-offset support — so viewers always tune in mid-show at the correct position, just like a real TV channel.
 
+## Screenshots
+
+### Dashboard — Now Playing
+![Dashboard showing active channels with now-playing cards and progress bars](https://www.arraybytes.com/images/Jellystream1.png)
+
+### Channel Management
+![Channel list with schedule type, libraries, and action buttons](https://www.arraybytes.com/images/Jellystream2.png)
+
+### Channel Editor
+![Channel editor showing name, libraries, genre include/exclude filters](https://www.arraybytes.com/images/Jellystream3.png)
+![Channel editor bottom — schedule regeneration and Jellyfin Live TV registration](https://www.arraybytes.com/images/Jellystream4.png)
+
+### Collections — Browse & Build
+![Collection editor showing a media browser grid of movie posters with a selected items panel](https://www.arraybytes.com/images/Jellystream5.png)
+![Browsing movies in the collection editor with Back to the Future, Batman, and more](https://www.arraybytes.com/images/Jellystream6.png)
+![Creating a new collection named "Comic Book Heroes" with 8 selected items](https://www.arraybytes.com/images/Jellystream7.png)
+
+---
+
 ## How It Works
 
 1. Create a **Channel** and assign one or more Jellyfin libraries to it
-2. Add **genre filters** to include only matching content (and optionally exclude genres)
-3. JellyStream **auto-generates a 7-day schedule** from matching Jellyfin items
-4. The schedule is **persistent** — the same content plays at the same time on every device
-5. Point Jellyfin Live TV (or any IPTV player) at the M3U and XMLTV endpoints
-6. When a viewer tunes in, ffmpeg **seeks to the correct time offset** — no restarting from the beginning
-7. A **background scheduler** (APScheduler) runs nightly to keep schedules 48+ hours ahead
+2. Optionally add a **Collection** as an additional content source (see Collections below)
+3. Add **genre filters** to include only matching content (and optionally exclude genres)
+4. JellyStream **auto-generates a 7-day schedule** from matching Jellyfin items
+5. The schedule is **persistent** — the same content plays at the same time on every device
+6. Point Jellyfin Live TV (or any IPTV player) at the M3U and XMLTV endpoints
+7. When a viewer tunes in, ffmpeg **seeks to the correct time offset** — no restarting from the beginning
+8. A **background scheduler** (APScheduler) runs nightly to keep schedules 48+ hours ahead
 
 ## Features
 
 - **Genre-based auto-scheduling** — fills 7 days forward from Jellyfin content matching your genre filters
 - **Genre include/exclude** — include genres you want, exclude genres you don't (e.g. Action channel that excludes Animation)
 - **Multiple libraries per channel** — mix Movies and TV Shows on one channel
+- **Collections** — curate hand-picked sets of movies, series, seasons, or episodes; use them as channel content sources alongside or instead of libraries
+- **Collection browser** — browse your Jellyfin libraries in a visual grid, drill into series/seasons/episodes, and build collections with a shopping-cart UI
+- **Jellyfin boxset import** — import an existing Jellyfin boxset as a JellyStream collection in one click
+- **Collection verify** — check which collection items are still on disk, have moved, or have been deleted from Jellyfin
 - **Persistent EPG** — schedules stored in SQLite; same time slot = same content regardless of viewer
 - **M3U + XMLTV endpoints** — 3-hour lookback, 7-day forward window for full EPG coverage
 - **ffmpeg stream proxy with time-offset** — `-ss` seek so viewers join at the correct position
 - **Preferred audio language** — configurable ISO 639-2 code (e.g. `eng`, `jpn`); falls back to first track
 - **Jellyfin Live TV registration** — register the M3U tuner and XMLTV listing provider directly from the UI
 - **APScheduler background job** — daily 2 AM job extends schedules for channels running low
-- **Web interface** — PHP + Lighttpd frontend for managing channels and viewing schedules
+- **Web interface** — PHP + Lighttpd frontend for managing channels, collections, and schedules
 - **Comprehensive logging** — daily rotating log files with configurable level
 
 ## Prerequisites
@@ -108,6 +132,39 @@ Once running:
 | `http://localhost:8000/api/livetv/xmltv/all` | XMLTV EPG (all channels) |
 | `http://localhost:8000/api/livetv/stream/{id}` | Live stream for channel `{id}` |
 
+## Collections
+
+Collections are curated sets of media items — movies, TV series, seasons, or individual episodes — that you assemble manually from your Jellyfin libraries. Once created, a collection can be attached to one or more channels as a content source, giving you precise control over what plays on a channel.
+
+### Creating a Collection
+
+1. Go to **Collections** in the web UI and click **New Collection**
+2. Use the browser panel to pick a library, filter by type (Movies / Series) or search by title
+3. Drill into a series to browse seasons, then into a season to select individual episodes
+4. Click items to add them to the **Selected Items** cart on the right
+5. Give the collection a name and click **Save Collection**
+
+### Importing a Jellyfin Boxset
+
+On the Collections list page, click **Import Boxset** to pull in an existing Jellyfin boxset. JellyStream fetches all items from the boxset, enriches them with NFO metadata and thumbnail paths, and saves them as a local collection.
+
+### Using a Collection as a Channel Source
+
+In the Channel editor, scroll to **Collection Sources** and pick a collection from the dropdown. The collection's items are merged into the channel's content pool alongside any library-sourced items. Genre filters apply to both sources using the stored genre metadata — no extra Jellyfin queries needed at schedule generation time.
+
+A channel can use libraries only, collections only, or both together.
+
+### Verifying a Collection
+
+On the Collections list page, click **Verify** next to any collection. JellyStream checks each item's file path on disk and reports:
+
+| Status | Meaning |
+|---|---|
+| ✓ ok | File exists at the stored path |
+| ⚠ moved | File is missing locally but Jellyfin reports a new path |
+| ✗ deleted | File is missing and Jellyfin has no record of it |
+| ? no path | Item has no stored file path (stream-only content) |
+
 ## Project Structure
 
 ```
@@ -115,23 +172,33 @@ jellystream/
 ├── app/
 │   ├── api/              # FastAPI route handlers
 │   │   ├── channels.py       # Channel CRUD (JSON body, Pydantic)
+│   │   ├── collections.py    # Collection CRUD + import + verify
 │   │   ├── schedules.py      # Schedule entries + "now playing"
 │   │   ├── livetv.py         # M3U, XMLTV, stream proxy route
-│   │   ├── jellyfin.py       # Jellyfin library/genre browser
+│   │   ├── jellyfin.py       # Jellyfin library/genre/browse endpoints
 │   │   └── schemas.py        # Pydantic request/response models
 │   ├── core/             # Config, database init, logging
-│   ├── integrations/     # JellyfinClient (auth, items, stream URL)
+│   ├── integrations/     # JellyfinClient (auth, items, stream URL, browse)
 │   ├── models/           # SQLAlchemy models
 │   │   ├── channel.py
 │   │   ├── channel_library.py
+│   │   ├── channel_collection_source.py  # Channel ↔ Collection join
+│   │   ├── collection.py
+│   │   ├── collection_item.py
 │   │   ├── genre_filter.py
 │   │   └── schedule_entry.py
 │   ├── services/         # Business logic
+│   │   ├── collection_service.py  # NFO/thumbnail enrichment + verify
 │   │   ├── schedule_generator.py  # Genre-based 7-day schedule builder
 │   │   ├── stream_proxy.py        # ffmpeg proxy with time-offset + language selection
 │   │   └── scheduler.py           # APScheduler daily job
 │   └── web/
 │       └── php/          # Lighttpd + PHP web interface
+│           └── pages/
+│               ├── channels.php
+│               ├── channel_edit.php
+│               ├── collections.php
+│               └── collection_edit.php
 ├── data/
 │   ├── database/         # SQLite database (auto-created)
 │   ├── commercials/      # (reserved for future filler content)

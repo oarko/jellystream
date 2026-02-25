@@ -202,9 +202,8 @@ async def _resolve_collection_to_items(
         user_id = await client.ensure_user_id()
         for ci in collection_items:
             if ci.item_type in ("Movie", "Episode"):
-                d = _collection_item_to_dict(ci)
-                if d["RunTimeTicks"] >= _MIN_TICKS:
-                    resolved.append(d)
+                # Always include — batch-fetch missing durations below
+                resolved.append(_collection_item_to_dict(ci))
 
             elif ci.item_type in ("Series", "Season"):
                 # Expand to episodes via Jellyfin admin endpoint
@@ -244,6 +243,47 @@ async def _resolve_collection_to_items(
                         f"collection id={ci.media_item_id}: {exc}",
                         exc_info=True,
                     )
+
+        # Batch-fetch durations from Jellyfin for items that were stored without one.
+        # This covers items imported before duration tracking or where Jellyfin
+        # returned no RunTimeTicks at browse time.
+        no_duration = [d for d in resolved if (d.get("RunTimeTicks") or 0) < _MIN_TICKS and d.get("Id")]
+        if no_duration:
+            ids_param = ",".join(d["Id"] for d in no_duration)
+            logger.debug(
+                f"_resolve_collection_to_items: batch-fetching durations for "
+                f"{len(no_duration)} items without stored duration"
+            )
+            try:
+                async with session.get(
+                    f"{client.base_url}/Items",
+                    headers=client.headers,
+                    params={"Ids": ids_param, "Fields": "RunTimeTicks", "UserId": user_id},
+                ) as resp:
+                    resp.raise_for_status()
+                    ticks_data = await resp.json()
+                ticks_map = {
+                    item["Id"]: (item.get("RunTimeTicks") or 0)
+                    for item in ticks_data.get("Items", [])
+                }
+                for d in resolved:
+                    fetched = ticks_map.get(d.get("Id", ""), 0)
+                    if fetched >= _MIN_TICKS:
+                        d["RunTimeTicks"] = fetched
+            except Exception as exc:
+                logger.warning(
+                    f"_resolve_collection_to_items: batch duration fetch failed: {exc}"
+                )
+
+    # Filter out any items that still have no valid duration after the batch fetch
+    before = len(resolved)
+    resolved = [d for d in resolved if (d.get("RunTimeTicks") or 0) >= _MIN_TICKS]
+    skipped = before - len(resolved)
+    if skipped:
+        logger.warning(
+            f"_resolve_collection_to_items: collection_id={collection_id} — "
+            f"{skipped} item(s) skipped (no duration in DB or Jellyfin)"
+        )
 
     logger.info(
         f"_resolve_collection_to_items: collection_id={collection_id} → "
@@ -561,6 +601,7 @@ async def generate_channel_schedule(
     shuffled_pool = item_pool.copy()
     random.shuffle(shuffled_pool)
     pool_index = 0
+    consecutive_skips = 0  # guard against infinite loop if all items have no duration
 
     new_entries: List[ScheduleEntry] = []
 
@@ -575,7 +616,15 @@ async def generate_channel_schedule(
 
         ticks = item.get("RunTimeTicks", 0)
         if not ticks or ticks < _MIN_TICKS:
+            consecutive_skips += 1
+            if consecutive_skips > len(shuffled_pool) * 2:
+                logger.error(
+                    f"generate_channel_schedule: channel {channel_id} — "
+                    f"all {len(shuffled_pool)} pool items have no valid duration, aborting fill"
+                )
+                break
             continue
+        consecutive_skips = 0
 
         duration_seconds = int(ticks // _TICKS_PER_SECOND)
         end_time = cursor + timedelta(seconds=duration_seconds)

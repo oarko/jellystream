@@ -15,6 +15,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'HOST' => $_POST['host'] ?? '0.0.0.0',
         'PORT' => $_POST['api_port'] ?? '8000',
         'DATABASE_URL' => $_POST['database_url'] ?? 'sqlite:///./data/database/jellystream.db',
+        'JELLYSTREAM_PUBLIC_URL' => $_POST['jellystream_public_url'] ?? '',
         'JELLYFIN_URL' => $_POST['jellyfin_url'] ?? '',
         'JELLYFIN_API_KEY' => $_POST['jellyfin_api_key'] ?? '',
         'JELLYFIN_USER_ID' => $_POST['jellyfin_user_id'] ?? '',
@@ -161,6 +162,13 @@ $current_config = $db->getEnvConfig();
                     <label for="host">Server Host</label>
                     <input type="text" id="host" name="host"
                            value="<?php echo htmlspecialchars($current_config['HOST'] ?? '0.0.0.0'); ?>">
+                    <small style="color: #888;">
+                        Leave as <code>0.0.0.0</code> — this is the bind address, not the
+                        network address. Setting it to a specific IP makes the backend stop
+                        listening on <code>localhost</code>, which breaks the PHP frontend's
+                        own server-side calls to the API. To advertise your LAN IP to Jellyfin
+                        (for M3U/XMLTV URLs), use "JellyStream Public URL" below instead.
+                    </small>
                 </div>
 
                 <h2>Port Configuration</h2>
@@ -179,6 +187,19 @@ $current_config = $db->getEnvConfig();
                            value="<?php echo defined('API_BACKEND_PORT') ? API_BACKEND_PORT : ($current_config['PORT'] ?? 8000); ?>"
                            min="1024" max="65535">
                     <small style="color: #B3B3B3;">Port for the FastAPI backend (default: 8000)</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="jellystream_public_url">JellyStream Public URL</label>
+                    <input type="url" id="jellystream_public_url" name="jellystream_public_url"
+                           placeholder="http://192.168.1.100:8000"
+                           value="<?php echo htmlspecialchars($current_config['JELLYSTREAM_PUBLIC_URL'] ?? ''); ?>">
+                    <small style="color: #888;">
+                        The network-accessible URL Jellyfin uses to reach THIS JellyStream
+                        instance — used in M3U stream URLs and XMLTV icon URLs. Must be a
+                        real IP/hostname, not <code>localhost</code>. Leave blank only if
+                        Jellyfin and JellyStream run on the same machine.
+                    </small>
                 </div>
 
                 <h2>Jellyfin Configuration</h2>

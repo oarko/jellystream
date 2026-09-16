@@ -85,6 +85,44 @@ async def get_current_entry(
     return entry
 
 
+async def get_next_entry(
+    channel_id: int, after_entry: ScheduleEntry, db: AsyncSession
+) -> Optional[ScheduleEntry]:
+    """
+    Return the ScheduleEntry that comes immediately after `after_entry` in
+    this channel's timeline (ordered by start_time), regardless of the
+    current wall-clock time.
+
+    Used by _continuous_stream_generator to advance from one entry to the
+    next by playback order rather than by re-deriving position from "now" —
+    see that function's docstring for why that distinction matters.
+    """
+    logger.debug(
+        f"get_next_entry: channel_id={channel_id}, after entry id={after_entry.id} "
+        f"start_time={after_entry.start_time.isoformat()}"
+    )
+
+    result = await db.execute(
+        select(ScheduleEntry)
+        .where(
+            ScheduleEntry.channel_id == channel_id,
+            ScheduleEntry.start_time > after_entry.start_time,
+        )
+        .order_by(ScheduleEntry.start_time)
+        .limit(1)
+    )
+    entry = result.scalar_one_or_none()
+
+    if entry:
+        logger.debug(f"get_next_entry: found '{entry.title}' (id={entry.id})")
+    else:
+        logger.debug(
+            f"get_next_entry: no further entries scheduled for channel {channel_id}"
+        )
+
+    return entry
+
+
 async def _detect_preferred_audio_index(source: str) -> Optional[int]:
     """
     Run ffprobe to find the absolute stream index of the first audio track
@@ -220,15 +258,57 @@ async def _continuous_stream_generator(
     Yield MPEG-TS chunks indefinitely, transitioning between schedule entries
     as each one ends.
 
-    When the current entry's ffmpeg process exits the generator re-queries
-    the database for the next entry (time has advanced so the query naturally
-    returns the following programme) and starts a new ffmpeg process.
+    The *first* entry for a new connection is picked by wall clock (via
+    get_current_entry) so a viewer tuning in mid-show joins at the correct
+    offset, like real broadcast TV.
+
+    Every entry after that is picked by playback order (via get_next_entry)
+    and started at offset 0 — NOT by re-querying wall clock. Schedule entries
+    are sized from Jellyfin's reported RunTimeTicks, which can differ
+    slightly from a file's real playable duration. If we re-derived offset
+    from "now" on every transition, a file that runs even a few seconds
+    longer or shorter than its metadata would leave wall clock out of sync
+    with actual playback, and the next item would start already partway in
+    (or replay the tail of the one that just finished). Following playback
+    order instead of the clock means nothing is ever skipped or repeated —
+    at the cost of this one connection's timeline drifting from the nominal
+    schedule over a long session, which is the far smaller problem.
 
     If there is a gap in the schedule the generator waits _GAP_POLL_INTERVAL
     seconds between retries instead of killing the connection.
     """
+    previous_entry: Optional[ScheduleEntry] = None
+
     while True:
-        entry = await get_current_entry(channel_id, db)
+        offset_seconds = 0
+
+        if previous_entry is None:
+            entry = await get_current_entry(channel_id, db)
+            if entry:
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
+                offset_seconds = max(0, int((now - entry.start_time).total_seconds()))
+        else:
+            entry = await get_next_entry(channel_id, previous_entry, db)
+            if not entry:
+                # Schedule hasn't been generated this far ahead yet (background
+                # scheduler runs nightly). Fall back to a wall-clock lookup so
+                # we recover as soon as it catches up, rather than stalling
+                # forever waiting for an entry that starts right after the one
+                # that just played.
+                logger.warning(
+                    f"_continuous_stream_generator: channel {channel_id} ran "
+                    f"past the end of the generated schedule, falling back "
+                    f"to wall-clock lookup"
+                )
+                entry = await get_current_entry(channel_id, db)
+                if entry and entry.id == previous_entry.id:
+                    # Nothing has been scheduled after this entry yet and we
+                    # already played it in full — don't replay it just
+                    # because wall clock still falls inside its old slot.
+                    entry = None
+                elif entry:
+                    now = datetime.now(timezone.utc).replace(tzinfo=None)
+                    offset_seconds = max(0, int((now - entry.start_time).total_seconds()))
 
         if not entry:
             logger.debug(
@@ -238,9 +318,6 @@ async def _continuous_stream_generator(
             await asyncio.sleep(_GAP_POLL_INTERVAL)
             continue
 
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-        offset_seconds = max(0, int((now - entry.start_time).total_seconds()))
-
         try:
             source = await _resolve_source(entry, channel_id)
         except Exception as exc:
@@ -249,9 +326,10 @@ async def _continuous_stream_generator(
                 f"entry {entry.id} '{entry.title}': {exc}",
                 exc_info=True,
             )
-            # Skip to next entry by sleeping until this entry should have ended
-            remaining = max(1, int((entry.end_time - now).total_seconds()))
-            await asyncio.sleep(min(remaining, 30))
+            # Move on to the next entry in sequence rather than retrying this
+            # broken one — get_next_entry will skip past it next iteration.
+            previous_entry = entry
+            await asyncio.sleep(min(_GAP_POLL_INTERVAL, 30))
             continue
 
         audio_idx = await _detect_preferred_audio_index(source)
@@ -286,6 +364,9 @@ async def _continuous_stream_generator(
                 f"_continuous_stream_generator: channel={channel_id} "
                 f"'{entry.title}' finished, advancing to next entry"
             )
+
+        # Advance by playback order, not wall clock — see docstring above.
+        previous_entry = entry
 
         # Tiny pause to avoid a tight spin if ffmpeg exits instantly (bad source)
         await asyncio.sleep(0.2)

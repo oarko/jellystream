@@ -469,11 +469,15 @@ JELLYFIN_CLIENT_NAME=JellyStream
 JELLYFIN_DEVICE_NAME=JellyStream Server
 JELLYFIN_DEVICE_ID=                    # Optional, auto-generated
 
+# Keep HOST=0.0.0.0 (all interfaces) — binds to BOTH localhost (for PHP→API calls)
+# AND the network IP (for Jellyfin→API). Setting a specific IP breaks PHP→API.
 HOST=0.0.0.0
 PORT=8000
 
-# Must be a network-accessible IP — Jellyfin fetches M3U/XMLTV from this address.
-# Using localhost will cause Jellyfin registration to fail.
+# Network-accessible IP/hostname used in M3U stream URLs and XMLTV icon URLs so
+# Jellyfin can reach JellyStream from a different machine. Must NOT be localhost.
+# This is separate from HOST — HOST controls what to bind to; this controls what
+# URL to advertise to external clients.
 JELLYSTREAM_PUBLIC_URL=http://192.168.1.100:8000
 
 # Preferred audio language (ISO 639-2 code, e.g. eng, jpn, fra)
@@ -590,8 +594,18 @@ on elements it may have already destroyed).
 - `getClientApiBaseUrl()` fixes JS fetch from remote browsers (HTTP_HOST-based, not localhost)
 - Both frontend servers bind to `0.0.0.0` for network access
 
-### 🚧 Planned (Phase 2+)
-- Collections as channel content source (Phase 2 integration)
+### ✅ Phase 2 — Collections as Channel Source (complete)
+- `ChannelCollectionSource` join table — channels reference JellyStream collections as content sources
+- `collection_sources` field added to `CreateChannelRequest` / `UpdateChannelRequest`; `libraries` now optional
+- Channel editor UI: "Collection Sources" section with picker and add/remove buttons
+- `_resolve_collection_to_items()`: Movie/Episode→direct, Series/Season→Jellyfin expand, Collection→recursive
+- `_get_collection_pool()`: deduplicates across sources, applies same include/exclude genre filters
+- Items with missing stored duration are batch-fetched from Jellyfin in one call before scheduling
+- Genre include filter passes through items with no stored genres (manually curated items)
+- Fill loop has consecutive_skips guard to prevent infinite loop on all-no-duration pools
+- Regenerate Schedule button uses `${API_BASE}` (client-side URL) not `<?php echo API_BASE_URL; ?>` (localhost)
+
+### 🚧 Planned (Phase 3+)
 - Channel dashboard with "now playing" and "up next"
 - Episode/movie deselection per channel
 - Filler content: commercials, bumpers, static image, next-show-immediate
@@ -712,6 +726,6 @@ python run.py
 
 ---
 
-*Last Updated: 2026-02-23*
-*Version: 0.5.0*
-*Status: Phase 1 + Collections (1.5) complete — Phase 2 planning*
+*Last Updated: 2026-02-24*
+*Version: 0.6.0*
+*Status: Phase 1 + Collections (1.5) + Collections-as-Channel-Source (2.0) complete*

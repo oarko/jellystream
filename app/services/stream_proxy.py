@@ -12,6 +12,7 @@ needing to reconnect.
 import asyncio
 import json
 import os
+import time
 from asyncio.subprocess import PIPE
 from datetime import datetime, timezone
 from typing import Optional
@@ -22,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.core.config import settings
+from app.core.database import AsyncSessionLocal
 from app.core.logging_config import get_logger
 from app.integrations.jellyfin import JellyfinClient
 from app.models.channel import Channel
@@ -218,6 +220,7 @@ def _build_ffmpeg_cmd(
     hwaccel: str = "none",
     hwaccel_device: Optional[str] = None,
     hw_decode: bool = True,
+    output_ts_offset: float = 0.0,
 ) -> list:
     """
     Build the ffmpeg command for one schedule entry.
@@ -234,6 +237,14 @@ def _build_ffmpeg_cmd(
     schedule advances immediately, looking exactly like the channel
     "jumping ahead" through content far faster than anyone could be
     watching it.
+
+    output_ts_offset: seconds added to every output timestamp. Each schedule
+        entry is a separate ffmpeg process whose MPEG-TS timestamps would
+        otherwise restart near zero, so the client sees the timeline jump
+        backwards at every item boundary — which ffmpeg-based players (incl.
+        Jellyfin's own live-TV pipeline) commonly fail on. _play_entry passes
+        the running total of everything already sent on this connection so
+        the timeline keeps moving forward across items.
 
     max_height: scale down to this height (keeping aspect ratio) if the
         source is taller; None or 0 = pass the native resolution through.
@@ -353,6 +364,10 @@ def _build_ffmpeg_cmd(
         "-c:a", "aac",
         "-b:a", "192k",
         "-ac", "2",                    # downmix to stereo
+    ]
+    if output_ts_offset > 0:
+        cmd += ["-output_ts_offset", f"{output_ts_offset:.3f}"]
+    cmd += [
         # ── Output ───────────────────────────────────────────────────────────
         "-f", _OUTPUT_FORMAT,          # MPEG-TS container
         "-loglevel", "warning",
@@ -407,6 +422,7 @@ async def _play_entry(
     channel: Channel,
     channel_id: int,
     chunk_size: int,
+    timeline: dict,
 ):
     """
     Resolve the entry's source and stream it through ffmpeg using the
@@ -470,6 +486,7 @@ async def _play_entry(
             hwaccel=stage_hwaccel,
             hwaccel_device=channel.hwaccel_device,
             hw_decode=hw_decode,
+            output_ts_offset=timeline["offset"],
         )
         logger.debug(
             f"_play_entry: starting ffmpeg for '{entry.title}' (id={entry.id}), "
@@ -486,6 +503,7 @@ async def _play_entry(
         stderr_tail = bytearray()
         stderr_task = asyncio.create_task(_drain_stderr(process, stderr_tail))
         bytes_yielded = 0
+        started_at = time.monotonic()
         try:
             while True:
                 chunk = await process.stdout.read(chunk_size)
@@ -504,6 +522,15 @@ async def _play_entry(
                 await stderr_task
             except (asyncio.CancelledError, Exception):
                 pass
+
+        # Advance the shared timeline by how long this process ran, so the
+        # next one continues after it instead of restarting near zero. With
+        # -re, wall-clock time is (just over) the media time actually sent;
+        # the small margin keeps the next start from ever landing *before*
+        # this one's last timestamp (a backwards step is the thing to avoid;
+        # a sub-second forward gap is harmless).
+        if bytes_yielded > 0:
+            timeline["offset"] += (time.monotonic() - started_at) + 0.5
 
         # A clean finish needs BOTH some output AND a zero exit code.
         # bytes_yielded alone isn't enough: a process that gets killed
@@ -549,7 +576,7 @@ async def _play_entry(
 
 
 async def _continuous_stream_generator(
-    channel_id: int, db: AsyncSession, chunk_size: int = 65536
+    channel_id: int, chunk_size: int = 65536
 ):
     """
     Yield MPEG-TS chunks indefinitely, transitioning between schedule entries
@@ -586,37 +613,54 @@ async def _continuous_stream_generator(
     seconds between retries instead of killing the connection.
     """
     previous_entry: Optional[ScheduleEntry] = None
+    # Running total of media time already sent on this connection (see
+    # _build_ffmpeg_cmd's output_ts_offset).
+    timeline = {"offset": 0.0}
 
     while True:
         offset_seconds = 0
+        channel: Optional[Channel] = None
 
-        if previous_entry is None:
-            entry = await get_current_entry(channel_id, db)
-            if entry:
-                now = datetime.now(timezone.utc).replace(tzinfo=None)
-                offset_seconds = max(0, int((now - entry.start_time).total_seconds()))
-        else:
-            entry = await get_next_entry(channel_id, previous_entry, db)
-            if not entry:
-                # Schedule hasn't been generated this far ahead yet (background
-                # scheduler runs nightly). Fall back to a wall-clock lookup so
-                # we recover as soon as it catches up, rather than stalling
-                # forever waiting for an entry that starts right after the one
-                # that just played.
-                logger.warning(
-                    f"_continuous_stream_generator: channel {channel_id} ran "
-                    f"past the end of the generated schedule, falling back "
-                    f"to wall-clock lookup"
-                )
-                entry = await get_current_entry(channel_id, db)
-                if entry and entry.id == previous_entry.id:
-                    # Nothing has been scheduled after this entry yet and we
-                    # already played it in full — don't replay it just
-                    # because wall clock still falls inside its old slot.
-                    entry = None
-                elif entry:
+        # Every DB lookup here uses its own short-lived session, closed before
+        # ffmpeg starts. Reusing the request-scoped session for the life of
+        # the stream (hours) leaked pooled connections, and — because the ORM
+        # returns an already-loaded object from a session's identity map
+        # without refreshing its fields — also meant "re-fetching" the channel
+        # could silently keep returning the stale settings.
+        async with AsyncSessionLocal() as session:
+            if previous_entry is None:
+                entry = await get_current_entry(channel_id, session)
+                if entry:
                     now = datetime.now(timezone.utc).replace(tzinfo=None)
                     offset_seconds = max(0, int((now - entry.start_time).total_seconds()))
+            else:
+                entry = await get_next_entry(channel_id, previous_entry, session)
+                if not entry:
+                    # Schedule hasn't been generated this far ahead yet (background
+                    # scheduler runs nightly). Fall back to a wall-clock lookup so
+                    # we recover as soon as it catches up, rather than stalling
+                    # forever waiting for an entry that starts right after the one
+                    # that just played.
+                    logger.warning(
+                        f"_continuous_stream_generator: channel {channel_id} ran "
+                        f"past the end of the generated schedule, falling back "
+                        f"to wall-clock lookup"
+                    )
+                    entry = await get_current_entry(channel_id, session)
+                    if entry and entry.id == previous_entry.id:
+                        # Nothing has been scheduled after this entry yet and we
+                        # already played it in full — don't replay it just
+                        # because wall clock still falls inside its old slot.
+                        entry = None
+                    elif entry:
+                        now = datetime.now(timezone.utc).replace(tzinfo=None)
+                        offset_seconds = max(0, int((now - entry.start_time).total_seconds()))
+
+            if entry:
+                channel_result = await session.execute(
+                    select(Channel).where(Channel.id == channel_id)
+                )
+                channel = channel_result.scalar_one_or_none()
 
         if not entry:
             logger.debug(
@@ -626,9 +670,6 @@ async def _continuous_stream_generator(
             await asyncio.sleep(_GAP_POLL_INTERVAL)
             continue
 
-        # Fresh settings for this specific entry — see docstring above.
-        channel_result = await db.execute(select(Channel).where(Channel.id == channel_id))
-        channel = channel_result.scalar_one_or_none()
         if not channel:
             logger.warning(
                 f"_continuous_stream_generator: channel {channel_id} no longer "
@@ -636,7 +677,7 @@ async def _continuous_stream_generator(
             )
             return
 
-        async for chunk in _play_entry(entry, offset_seconds, channel, channel_id, chunk_size):
+        async for chunk in _play_entry(entry, offset_seconds, channel, channel_id, chunk_size, timeline):
             yield chunk
 
         # Advance by playback order, not wall clock — see docstring above.
@@ -677,7 +718,7 @@ async def stream_channel(channel_id: int, db: AsyncSession) -> StreamingResponse
     offset_seconds = max(0, int((now - entry.start_time).total_seconds()))
 
     return StreamingResponse(
-        _continuous_stream_generator(channel_id, db),
+        _continuous_stream_generator(channel_id),
         media_type=_MEDIA_TYPE,
         headers={
             "Cache-Control": "no-cache",

@@ -77,18 +77,40 @@ class Settings(BaseSettings):
     @classmethod
     def _blank_env_vars_use_defaults(cls, data: Any) -> Any:
         """
-        Treat an empty string from .env as "not set" rather than a literal
-        value, so the field's coded default applies instead of a hard crash
-        at startup (e.g. LOG_RETENTION_DAYS= with nothing after the "="
-        fails int parsing otherwise). A blank .env line is a config-editing
-        slip, not an intentional value — no field here needs to be
-        explicitly set to "" to mean something different from being absent;
-        the string fields that DO default to "" (JELLYFIN_USER_ID,
-        MEDIA_PATH_MAP, etc.) end up at that same default either way.
+        Treat an empty string from .env — or a value that's nothing but a
+        stray inline comment — as "not set" rather than a literal value, so
+        the field's coded default applies instead of a hard crash at
+        startup (e.g. LOG_RETENTION_DAYS= with nothing after the "=" fails
+        int parsing otherwise).
+
+        The "#comment" case handles a specific, previously-observed
+        corruption: .env.example has lines like
+        "JELLYFIN_USER_ID=  # Optional, auto-detected if left empty" —
+        relying on dotenv's rule that only an unquoted value followed by
+        whitespace-then-# is a stripped inline comment. If anything
+        re-serializes that file and trims the leading whitespace before the
+        "#" (as the setup wizard's config round-trip did), the value becomes
+        the literal string "# Optional, auto-detected if left empty" — a
+        non-empty, seemingly valid string that silently defeats
+        auto-detection instead of erroring. No field in this app has a
+        legitimate value starting with "#", so treat that the same as blank.
+
+        A blank/comment-only .env line is a config-editing slip either way,
+        not an intentional value — no field here needs "" or a bare comment
+        to mean something different from being absent; the string fields
+        that DO default to "" (JELLYFIN_USER_ID, MEDIA_PATH_MAP, etc.) end
+        up at that same default regardless.
         """
-        if isinstance(data, dict):
-            return {k: v for k, v in data.items() if v != ""}
-        return data
+        if not isinstance(data, dict):
+            return data
+
+        def is_blank(v: Any) -> bool:
+            if not isinstance(v, str):
+                return False
+            v = v.strip()
+            return v == "" or v.startswith("#")
+
+        return {k: v for k, v in data.items() if not is_blank(v)}
 
 
 settings = Settings()

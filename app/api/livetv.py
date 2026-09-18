@@ -22,6 +22,12 @@ from app.models.schedule_entry import ScheduleEntry
 logger = get_logger(__name__)
 router = APIRouter()
 
+# Matches app/services/stream_proxy.py's _MEDIA_TYPE — kept as a separate
+# constant here (rather than importing it) since this module already avoids
+# top-level imports from stream_proxy to prevent an import cycle (livetv.py
+# imports stream_proxy functions locally, inside each route, instead).
+_MEDIA_TYPE = "video/mp2t"
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def _base_url() -> str:

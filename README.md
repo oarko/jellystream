@@ -76,7 +76,10 @@ Then start the application:
 
 ```bash
 ./start.sh
+./start-lighttpd.sh
 ```
+
+There is also a new services option in the deploy/ folder
 
 ### Manual Setup
 

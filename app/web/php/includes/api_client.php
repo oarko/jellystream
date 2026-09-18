@@ -277,8 +277,12 @@ class ApiClient {
     /**
      * Manually trigger schedule generation for a channel.
      */
-    public function generateChannelSchedule($channel_id, $days = 7) {
-        return $this->post("/channels/{$channel_id}/generate-schedule?days={$days}");
+    public function generateChannelSchedule($channel_id, $days = 7, $reset = false) {
+        // Without reset the generator only APPENDS after the end of the existing
+        // schedule, so content added since (e.g. new collection items) wouldn't
+        // appear in the guide until the old schedule ran out.
+        $q = "days={$days}" . ($reset ? '&reset=true' : '');
+        return $this->post("/channels/{$channel_id}/generate-schedule?{$q}");
     }
 
     // ── Collections ────────────────────────────────────────────────────────

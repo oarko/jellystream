@@ -217,6 +217,7 @@ def _build_ffmpeg_cmd(
     preset: str = "veryfast",
     hwaccel: str = "none",
     hwaccel_device: Optional[str] = None,
+    hw_decode: bool = True,
 ) -> list:
     """
     Build the ffmpeg command for one schedule entry.
@@ -230,6 +231,18 @@ def _build_ffmpeg_cmd(
         Falls back to "none" if given an unrecognized value.
     hwaccel_device: optional explicit device (e.g. "/dev/dri/renderD128" for
         vaapi) for machines with more than one GPU. Blank = auto-detect.
+    hw_decode: when hwaccel is set, whether to also try decoding on the GPU
+        (True, default) or always decode in software and only hand frames to
+        the GPU for encoding (False). Hardware decode is the harder of the
+        two to support — many GPUs' fixed-function decoders don't implement
+        older/unusual codecs at all (e.g. legacy MPEG-4 Part 2), and there's
+        nothing ffmpeg can do about that; it's a real hardware gap, not a
+        flag we can work around. Hardware ENCODE has no such dependency on
+        the source codec — it just needs raw decoded frames, which software
+        decode always produces regardless of the source format. _play_entry
+        uses this to retry with hw_decode=False before giving up on hardware
+        entirely, so a hardware-incompatible source codec costs only the
+        (usually cheaper) decode-side saving, not all of it.
     """
     # When any -map is present ffmpeg disables automatic stream selection, so
     # we must map both video and audio explicitly.  If ffprobe identified a
@@ -248,11 +261,15 @@ def _build_ffmpeg_cmd(
     scale_needed = bool(max_height and max_height > 0)
     cmd = ["ffmpeg"]
 
-    # ── Hardware device init (must precede -i) ──────────────────────────────
+    # ── Hardware device init (must precede -i). Needed whenever hwaccel is
+    # set at all, even with hw_decode=False — the encoder still needs a
+    # device context to allocate hardware surfaces on.
     if hwaccel == "vaapi":
         cmd += ["-vaapi_device", hwaccel_device or _DEFAULT_VAAPI_DEVICE]
     elif hwaccel == "qsv":
         cmd += ["-init_hw_device", f"qsv=hw:{hwaccel_device or 'auto'}", "-filter_hw_device", "hw"]
+    elif hwaccel == "nvenc":
+        cmd += ["-init_hw_device", f"cuda=cu:{hwaccel_device or '0'}", "-filter_hw_device", "cu"]
 
     # ── Input / seek ─────────────────────────────────────────────────────────
     cmd += [
@@ -262,31 +279,43 @@ def _build_ffmpeg_cmd(
         "-fflags", "nobuffer",         # pass frames through without extra buffering
     ]
 
-    if hwaccel == "vaapi":
+    if hw_decode and hwaccel == "vaapi":
         cmd += ["-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi"]
-    elif hwaccel == "qsv":
+    elif hw_decode and hwaccel == "qsv":
         cmd += ["-hwaccel", "qsv", "-hwaccel_output_format", "qsv"]
-    elif hwaccel == "nvenc":
+    elif hw_decode and hwaccel == "nvenc":
         cmd += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
 
     cmd += ["-i", source, "-map", "0:v:0", *audio_map]
 
-    # ── Video filter — scale, keeping frames resident on the GPU when no
-    # scaling is needed at all (fastest path). When scaling IS needed under a
-    # hw decode path, round-trip through system memory: this is the most
-    # broadly-compatible approach across driver versions (the alternative,
-    # scale_vaapi/vpp_qsv, has expression-syntax support that varies by
-    # driver) — the frame is small, so this costs little CPU compared to the
-    # decode/encode work already offloaded to the GPU.
-    if scale_needed:
-        scale_expr = f"scale=-2:min({max_height}\\,ih)"
-        if hwaccel in ("vaapi", "qsv"):
-            vf = f"hwdownload,format=nv12,{scale_expr},format=nv12,hwupload"
-        elif hwaccel == "nvenc":
-            vf = f"hwdownload,format=nv12,{scale_expr},format=nv12,hwupload_cuda"
-        else:
-            vf = scale_expr
-        cmd += ["-vf", vf]
+    # ── Video filter — get frames onto the GPU for encoding (when hwaccel is
+    # set) and/or scale, in whichever combination the decode path requires.
+    upload_filter = {"vaapi": "hwupload", "qsv": "hwupload", "nvenc": "hwupload_cuda"}.get(hwaccel)
+    scale_expr = f"scale=-2:min({max_height}\\,ih)" if scale_needed else None
+    vf_parts: list = []
+
+    if hwaccel == "none":
+        if scale_expr:
+            vf_parts = [scale_expr]
+    elif hw_decode:
+        # Frames are already GPU-resident from decode. Only round-trip
+        # through system memory if a scale is actually needed — this is the
+        # most broadly-compatible way to scale (the alternative, scale_vaapi/
+        # vpp_qsv, has expression-syntax support that varies by driver) — the
+        # frame is small, so this costs little CPU next to the decode/encode
+        # work already offloaded to the GPU. If no scaling is needed, skip
+        # filtering entirely and stay fully GPU-resident end to end.
+        if scale_expr:
+            vf_parts = ["hwdownload", "format=nv12", scale_expr, "format=nv12", upload_filter]
+    else:
+        # Software decode (hw_decode=False): frames start in system memory,
+        # so just scale (if needed) then upload once for the encoder.
+        if scale_expr:
+            vf_parts.append(scale_expr)
+        vf_parts += ["format=nv12", upload_filter]
+
+    if vf_parts:
+        cmd += ["-vf", ",".join(vf_parts)]
 
     # ── Video codec ──────────────────────────────────────────────────────────
     if hwaccel == "vaapi":
@@ -370,11 +399,22 @@ async def _play_entry(
     channel's configured transcode settings (max_height / preset / hwaccel),
     yielding MPEG-TS chunks.
 
-    If a hardware-accelerated encode fails immediately — detected as the
-    ffmpeg process exiting having produced zero bytes of output, almost
-    always a misconfigured driver/device rather than the source itself being
-    bad — this retries the same entry once in software (libx264) rather than
-    letting a bad hwaccel config silently skip content for the whole channel.
+    When hwaccel is set, tries up to three tiers in order, each one only
+    if the previous produced zero bytes of output:
+      1. hardware decode + hardware encode (cheapest, but requires the GPU
+         to support the source's codec/profile — many GPUs' fixed-function
+         decoders don't implement older/unusual codecs like legacy MPEG-4
+         Part 2 at all, which is a real hardware gap, not something any
+         ffmpeg flag can work around)
+      2. software decode + hardware encode (works for any source codec,
+         since the encoder only needs raw decoded frames and doesn't care
+         how they were produced — this is what makes hardware encoding
+         actually apply "all the time it's selected", regardless of the
+         source's codec, at the cost of losing only the decode-side saving
+         for that one file)
+      3. full software (libx264) — the final safety net if hardware encode
+         itself is unavailable (bad driver/device), so nothing is ever
+         skipped regardless of what's wrong.
     """
     try:
         source = await _resolve_source(entry, channel_id)
@@ -389,19 +429,27 @@ async def _play_entry(
 
     audio_idx = await _detect_preferred_audio_index(source)
     hwaccel = channel.hwaccel or "none"
-    attempted_fallback = False
 
-    while True:
+    stages = (
+        [("none", True)]
+        if hwaccel == "none"
+        else [(hwaccel, True), (hwaccel, False), ("none", True)]
+    )
+
+    for stage_index, (stage_hwaccel, hw_decode) in enumerate(stages):
+        is_last_stage = stage_index == len(stages) - 1
+
         cmd = _build_ffmpeg_cmd(
             source, offset_seconds, audio_idx,
             max_height=channel.transcode_max_height,
             preset=channel.transcode_preset,
-            hwaccel=hwaccel,
+            hwaccel=stage_hwaccel,
             hwaccel_device=channel.hwaccel_device,
+            hw_decode=hw_decode,
         )
         logger.debug(
             f"_play_entry: starting ffmpeg for '{entry.title}' (id={entry.id}), "
-            f"offset={offset_seconds}s, hwaccel={hwaccel}, "
+            f"offset={offset_seconds}s, hwaccel={stage_hwaccel}, hw_decode={hw_decode}, "
             f"audio_stream={audio_idx if audio_idx is not None else 'default'}"
         )
 
@@ -433,31 +481,66 @@ async def _play_entry(
             except (asyncio.CancelledError, Exception):
                 pass
 
-        if bytes_yielded > 0 or hwaccel == "none" or attempted_fallback:
+        # A clean finish needs BOTH some output AND a zero exit code.
+        # bytes_yielded alone isn't enough: a process that gets killed
+        # partway through (e.g. the OOM killer, under combined load from
+        # several concurrently-transcoding channels) still closes its stdout
+        # pipe, which looks identical to a normal EOF if we only check
+        # whether any bytes came out — silently truncating playback to
+        # whatever had been written so far and racing on to the next
+        # scheduled entry as if this one had played in full.
+        returncode = process.returncode
+        success = bytes_yielded > 0 and returncode == 0
+
+        if success:
             logger.info(
                 f"_play_entry: channel={channel_id} '{entry.title}' finished "
-                f"(hwaccel={hwaccel}, bytes_yielded={bytes_yielded})"
+                f"(hwaccel={stage_hwaccel}, hw_decode={hw_decode}, bytes_yielded={bytes_yielded})"
             )
             return
 
-        # Hardware path produced nothing at all — almost certainly a driver
-        # or device misconfiguration, not the content actually ending.
-        # Retry once in software so this entry still plays.
-        attempted_fallback = True
+        if is_last_stage:
+            # No further fallback tier to try. Still move on to the next
+            # scheduled entry rather than retrying this one indefinitely —
+            # but say clearly that this was NOT a clean finish, so a crash
+            # doesn't get silently mistaken for the movie having ended.
+            logger.error(
+                f"_play_entry: channel={channel_id} '{entry.title}' gave up after "
+                f"exhausting all fallback tiers (hwaccel={stage_hwaccel}, "
+                f"hw_decode={hw_decode}, returncode={returncode}, "
+                f"bytes_yielded={bytes_yielded}) — moving on to the next scheduled "
+                f"entry. ffmpeg stderr tail: {bytes(stderr_tail)[-2000:]!r}"
+            )
+            return
+
+        # Not the last stage: either produced nothing, or exited abnormally
+        # despite some partial output — either way, try the next, more
+        # conservative tier rather than treating this as a normal finish.
         logger.error(
-            f"_play_entry: hwaccel '{hwaccel}' produced no output for "
-            f"'{entry.title}' (channel={channel_id}), retrying in software. "
-            f"ffmpeg stderr tail: {bytes(stderr_tail)[-2000:]!r}"
+            f"_play_entry: hwaccel={stage_hwaccel} hw_decode={hw_decode} "
+            f"{'produced no output' if bytes_yielded == 0 else f'exited abnormally (returncode={returncode}) after {bytes_yielded} bytes'} "
+            f"for '{entry.title}' (channel={channel_id}), trying next fallback "
+            f"stage. ffmpeg stderr tail: {bytes(stderr_tail)[-2000:]!r}"
         )
-        hwaccel = "none"
 
 
 async def _continuous_stream_generator(
-    channel_id: int, channel: Channel, db: AsyncSession, chunk_size: int = 65536
+    channel_id: int, db: AsyncSession, chunk_size: int = 65536
 ):
     """
     Yield MPEG-TS chunks indefinitely, transitioning between schedule entries
     as each one ends.
+
+    The channel's transcode settings (hwaccel/preset/max_height) are
+    re-fetched from the database fresh before every entry, not captured once
+    when the connection opens. A connection here can legitimately run for
+    hours across many titles — that's the whole point of this generator —
+    so if settings were only read once, changing a channel's hardware
+    acceleration setting while someone is already watching it would be
+    silently ignored for that viewer's entire remaining session, with
+    nothing in the logs to explain why the UI and the actual running stream
+    disagree. Re-fetching costs one extra indexed query per title (at most
+    a couple of hours apart), which is negligible.
 
     The *first* entry for a new connection is picked by wall clock (via
     get_current_entry) so a viewer tuning in mid-show joins at the correct
@@ -519,6 +602,16 @@ async def _continuous_stream_generator(
             await asyncio.sleep(_GAP_POLL_INTERVAL)
             continue
 
+        # Fresh settings for this specific entry — see docstring above.
+        channel_result = await db.execute(select(Channel).where(Channel.id == channel_id))
+        channel = channel_result.scalar_one_or_none()
+        if not channel:
+            logger.warning(
+                f"_continuous_stream_generator: channel {channel_id} no longer "
+                f"exists, ending stream"
+            )
+            return
+
         async for chunk in _play_entry(entry, offset_seconds, channel, channel_id, chunk_size):
             yield chunk
 
@@ -560,7 +653,7 @@ async def stream_channel(channel_id: int, db: AsyncSession) -> StreamingResponse
     offset_seconds = max(0, int((now - entry.start_time).total_seconds()))
 
     return StreamingResponse(
-        _continuous_stream_generator(channel_id, channel, db),
+        _continuous_stream_generator(channel_id, db),
         media_type=_MEDIA_TYPE,
         headers={
             "Cache-Control": "no-cache",

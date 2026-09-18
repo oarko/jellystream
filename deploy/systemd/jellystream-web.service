@@ -10,8 +10,8 @@ Wants=jellystream-api.service
 
 [Service]
 Type=simple
-User=oarko
-Group=oarko
+User=jellystream
+Group=jellystream
 WorkingDirectory=/home/oarko/jellystream
 # start-lighttpd.sh refuses to start if it finds a stale PID file from an
 # unclean shutdown (a guard meant for manual re-runs) — clear it before every

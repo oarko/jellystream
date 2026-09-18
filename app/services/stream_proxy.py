@@ -222,6 +222,19 @@ def _build_ffmpeg_cmd(
     """
     Build the ffmpeg command for one schedule entry.
 
+    Always includes -re (read input at native frame rate). Without it,
+    ffmpeg decodes/encodes as fast as the hardware allows — not at 1x
+    playback speed — and the only thing that happens to slow it down to
+    roughly real-time is TCP/pipe backpressure from however fast the
+    downstream client happens to be reading. That's not reliable: a client
+    that buffers ahead aggressively (common for live-TV style playback) lets
+    ffmpeg race through an entire file in minutes. From ffmpeg's side that's
+    a completely normal, clean finish — it really did reach EOF — so
+    _play_entry has no way to tell that apart from a genuine finish, and the
+    schedule advances immediately, looking exactly like the channel
+    "jumping ahead" through content far faster than anyone could be
+    watching it.
+
     max_height: scale down to this height (keeping aspect ratio) if the
         source is taller; None or 0 = pass the native resolution through.
     preset: libx264 speed/quality preset. Also accepted as-is by h264_qsv
@@ -274,6 +287,7 @@ def _build_ffmpeg_cmd(
     # ── Input / seek ─────────────────────────────────────────────────────────
     cmd += [
         "-ss", str(offset_seconds),    # fast seek in local file / HTTP Range
+        "-re",                         # read the input at its native frame rate
         "-probesize", "262144",        # 256 KB probe instead of default 5 MB
         "-analyzeduration", "1000000", # 1 s analysis instead of default 5 s
         "-fflags", "nobuffer",         # pass frames through without extra buffering

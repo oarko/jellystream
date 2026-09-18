@@ -193,29 +193,183 @@ install_dependencies() {
     fi
 }
 
-# Create .env file if it doesn't exist
+# ── .env helpers ──────────────────────────────────────────────────────────
+#
+# These edit .env by targeting one KEY=value line at a time (sed) rather
+# than rewriting the whole file, which is exactly the class of bug the PHP
+# setup wizard hit repeatedly in practice (a full-file rewrite silently
+# mangled unrelated lines/values). A line that isn't touched here is left
+# completely alone, comments included.
+
+# Set (or append) one KEY=value line in .env.
+_env_set() {
+    local key="$1" val="$2"
+    local esc
+    esc=$(printf '%s' "$val" | sed -e 's/[\&|]/\\&/g')
+    if grep -q "^${key}=" .env; then
+        sed -i "s|^${key}=.*|${key}=${esc}|" .env
+    else
+        echo "${key}=${esc}" >> .env
+    fi
+}
+
+# Prompt for one value, showing a default (used verbatim if Enter is
+# pressed) and re-prompting forever if required and left blank.
+_prompt_env() {
+    local prompt="$1" default="$2" required="$3" varname="$4"
+    local input
+    if [ -n "$default" ]; then
+        read -p "$prompt [$default]: " input
+        input="${input:-$default}"
+    else
+        read -p "$prompt: " input
+    fi
+    if [ "$required" = "required" ]; then
+        while [ -z "$input" ]; do
+            print_warning "This value is required."
+            read -p "$prompt: " input
+        done
+    fi
+    eval "$varname=\"\$input\""
+}
+
+# Create .env (from the template, if missing) and interactively fill in the
+# handful of settings every install actually needs, with examples.
 setup_env() {
-    if [ ! -f ".env" ]; then
+    if [ -f ".env" ]; then
+        print_success ".env file already exists"
+        read -p "Reconfigure the essential settings now? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            return 0
+        fi
+        cp .env .env.bak
+        print_info "Backed up existing .env to .env.bak first."
+    else
         print_info "Creating .env file from template..."
         cp .env.example .env
-        print_success ".env file created!"
-        print_warning "Please edit .env and configure your settings:"
-        echo "  - JELLYFIN_URL           Jellyfin server address (e.g. http://192.168.1.100:8096)"
-        echo "  - JELLYFIN_API_KEY       Admin API key from Jellyfin Dashboard → API Keys"
-        echo "  - JELLYSTREAM_PUBLIC_URL Network-accessible URL of this server (e.g. http://192.168.1.100:8000)"
-        echo "                           Must NOT be localhost — Jellyfin needs to reach this address"
-        echo "  - PREFERRED_AUDIO_LANGUAGE  ISO 639-2 code for preferred audio track (default: eng)"
-        echo "  - MEDIA_PATH_MAP         Optional: /jellyfin/path:/local/path (if paths differ)"
-    else
-        print_success ".env file already exists"
     fi
+
+    echo ""
+    print_info "Let's set the essentials. Press Enter to accept a [default] where shown."
+    echo ""
+
+    _prompt_env "Jellyfin URL (e.g. http://192.168.1.50:8096)" "" "required" jellyfin_url
+    _prompt_env "Jellyfin API Key — Jellyfin Dashboard -> API Keys (e.g. a81bbacea1f349ec96cc1cc084135f38)" "" "required" jellyfin_api_key
+
+    detected_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    _prompt_env "JellyStream Public URL — the address JELLYFIN uses to reach THIS machine (must NOT be localhost)" "http://${detected_ip:-192.168.1.100}:8000" "" jellystream_public_url
+
+    _prompt_env "Preferred audio language, ISO 639-2 (e.g. eng, fre, spa, jpn)" "eng" "" preferred_audio_language
+
+    print_info "Media path map: only needed if JellyStream and Jellyfin see the SAME media files at DIFFERENT paths (e.g. separate machines with different mount points). Leave blank if they match."
+    _prompt_env "Media path map (e.g. /media:/mnt/nas/media)" "" "" media_path_map
+
+    _env_set "JELLYFIN_URL" "$jellyfin_url"
+    _env_set "JELLYFIN_API_KEY" "$jellyfin_api_key"
+    _env_set "JELLYSTREAM_PUBLIC_URL" "$jellystream_public_url"
+    _env_set "PREFERRED_AUDIO_LANGUAGE" "$preferred_audio_language"
+    _env_set "MEDIA_PATH_MAP" "$media_path_map"
+    # HOST must stay 0.0.0.0 — binding to a specific IP breaks the PHP
+    # frontend's own server-side calls to the API. Force it instead of
+    # asking; a prior deployment broke exactly this way.
+    _env_set "HOST" "0.0.0.0"
+
+    print_success ".env configured!"
+    print_info "JELLYFIN_USER_ID and JELLYFIN_DEVICE_ID are left blank on purpose (both auto-detect/auto-generate). If you ever edit .env by hand, don't add a comment after the \"=\" on a line meant to be blank — .env files don't strip inline comments the way shell scripts do, so \"KEY=  # note\" can end up read back as the literal text \"# note\"."
 }
 
 # Create necessary directories
 create_directories() {
     print_info "Creating data directories..."
-    mkdir -p data/database data/commercials data/logos
+    mkdir -p data/database data/commercials data/logos logs
     print_success "Data directories created!"
+}
+
+# ── Dedicated service user ──────────────────────────────────────────────────
+
+SERVICE_USER="jellystream"
+
+# Create (or reuse) a system user with no login/home, dedicated to running
+# the JellyStream services — rather than whatever interactive user happens
+# to run this script. Idempotent: safe to re-run.
+create_service_user() {
+    print_info "Setting up dedicated service user '$SERVICE_USER'..."
+    read -p "Create/configure the '$SERVICE_USER' system user to run JellyStream as? (Y/n): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Nn]$ ]]; then
+        print_info "Skipping — deploy/systemd/*.service default to User=$SERVICE_USER; edit them if you're running as someone else."
+        return 0
+    fi
+
+    if id "$SERVICE_USER" &>/dev/null; then
+        print_success "System user '$SERVICE_USER' already exists"
+    else
+        print_info "Creating system user '$SERVICE_USER' (no login, no home directory)..."
+        sudo useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
+        print_success "Created system user '$SERVICE_USER'"
+    fi
+
+    # GPU access for hardware-accelerated transcoding (the channel Hardware
+    # Acceleration setting). The render device node is normally owned by
+    # group 'render' and sometimes also 'video' — only add groups that
+    # actually exist on this system (a headless box with no GPU driver
+    # installed yet won't have 'render' at all).
+    for grp in render video; do
+        if getent group "$grp" >/dev/null 2>&1; then
+            sudo usermod -aG "$grp" "$SERVICE_USER"
+            print_success "Added '$SERVICE_USER' to group '$grp'"
+        else
+            print_warning "Group '$grp' does not exist on this system — skipping (no GPU driver installed?)"
+        fi
+    done
+
+    # Let the person running setup read logs/the database without sudo too.
+    local current_user
+    current_user="$(whoami)"
+    if [ "$current_user" != "$SERVICE_USER" ]; then
+        sudo usermod -aG "$SERVICE_USER" "$current_user"
+        print_info "Added '$current_user' to the '$SERVICE_USER' group so you can read logs/database without sudo."
+        print_warning "Log out and back in (or run: newgrp $SERVICE_USER) for that to take effect in this shell."
+    fi
+}
+
+# Grant the service user read access to the whole project tree, and
+# read+write access to the directories it actually needs to write at
+# runtime, without changing who OWNS the tree (the admin user who ran this
+# script keeps full control — only group permissions change).
+configure_permissions() {
+    if ! id "$SERVICE_USER" &>/dev/null; then
+        print_info "Service user '$SERVICE_USER' not present — skipping permission setup."
+        return 0
+    fi
+
+    print_info "Setting permissions for '$SERVICE_USER' on $(pwd)..."
+
+    sudo chgrp -R "$SERVICE_USER" .
+    sudo chmod -R g+rX .   # capital X: only sets +x on things already executable somewhere (dirs, venv binaries) — never makes plain files executable
+
+    mkdir -p data/database data/commercials data/logos logs
+    sudo chgrp -R "$SERVICE_USER" data logs
+    sudo chmod -R g+rwX data logs
+
+    # Narrow exceptions: the PHP frontend's own web-based setup wizard
+    # (setup.php) saves .env and app/web/php/.phpconfig directly, running
+    # as this same service user under lighttpd/PHP-CGI. Grant write on
+    # just those two files (not the rest of the tree) so that wizard keeps
+    # working, rather than it silently failing with a permission error.
+    if [ -f .env ]; then
+        sudo chgrp "$SERVICE_USER" .env
+        sudo chmod g+rw .env
+    fi
+    touch app/web/php/.phpconfig 2>/dev/null || true
+    if [ -f app/web/php/.phpconfig ]; then
+        sudo chgrp "$SERVICE_USER" app/web/php/.phpconfig
+        sudo chmod g+rw app/web/php/.phpconfig
+    fi
+
+    print_success "Permissions configured for '$SERVICE_USER'"
+    print_warning "If your media library lives outside this project directory (the usual case), make sure '$SERVICE_USER' can read it too — e.g. by adding it to whatever group owns those files. JellyStream can't automate that part since it doesn't know your media layout."
 }
 
 # Main setup process
@@ -230,6 +384,8 @@ main() {
     install_dependencies
     setup_env
     create_directories
+    create_service_user
+    configure_permissions
 
     echo ""
     echo -e "${GREEN}╔═══════════════════════════════════════════╗${NC}"
@@ -237,27 +393,26 @@ main() {
     echo -e "${GREEN}╚═══════════════════════════════════════════╝${NC}"
     echo ""
     print_info "Next steps:"
-    echo "  1. Edit .env with your Jellyfin settings (see above)"
-    echo "  2. Start JellyStream:"
-    echo "     ${YELLOW}./start.sh${NC}"
-    echo "     — or manually:"
-    echo "     ${YELLOW}source venv/bin/activate && python3 run.py${NC}"
-    echo "  3. Start the web frontend (choose one):"
-    echo "     ${YELLOW}./start-php.sh${NC}      (Development - PHP built-in server, port 8080)"
-    echo "     ${YELLOW}./start-lighttpd.sh${NC} (Production  - Lighttpd server)"
-    echo "  4. Open the web UI at: ${YELLOW}http://localhost:8080${NC}"
-    echo "  5. Create channels, build collections, and register with Jellyfin Live TV"
+    echo "  1. Review .env if you want to tweak anything further"
+    echo "  2. Run as a systemd service (recommended — see deploy/README.md):"
+    echo "     ${YELLOW}sudo cp deploy/systemd/*.service /etc/systemd/system/${NC}"
+    echo "     ${YELLOW}sudo systemctl daemon-reload${NC}"
+    echo "     ${YELLOW}sudo systemctl enable --now jellystream-api jellystream-web${NC}"
+    echo "     (those units already default to User=$SERVICE_USER)"
+    echo "  3. Open the web UI at: ${YELLOW}http://localhost:8080${NC}"
+    echo "  4. Create channels, build collections, and register with Jellyfin Live TV"
     echo ""
 
-    # Ask if user wants to run the app now
-    read -p "Start JellyStream now? (y/N): " -n 1 -r
+    # Offer a quick foreground test as the CURRENT user — separate from the
+    # systemd service, which runs as $SERVICE_USER (see step 2 above).
+    read -p "Start JellyStream now for a quick test, as the current user? (y/N): " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         print_info "Starting JellyStream..."
         echo ""
         $PYTHON_CMD run.py
     else
-        print_info "You can start JellyStream later with: ${YELLOW}./start.sh${NC}"
+        print_info "You can start it later with: ${YELLOW}./start.sh${NC} (quick test) or the systemd service (step 2 above)."
     fi
 }
 

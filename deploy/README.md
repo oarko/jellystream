@@ -7,24 +7,55 @@ Two services, mirroring the two dev scripts:
 | `start.sh`           | `jellystream-api.service`  | FastAPI backend (`run.py` via the venv) |
 | `start-lighttpd.sh`  | `jellystream-web.service`  | PHP frontend (Lighttpd + FastCGI) |
 
-Both units assume the project lives at `/home/oarko/jellystream` and runs as
-user `oarko`. **Edit `WorkingDirectory=`, `ExecStart=`, `User=` and `Group=`
-in both `.service` files first if either differs on this machine.**
+Both units assume the project lives at `/home/oarko/jellystream` and run as
+a dedicated **`jellystream` system user** (no login, no home directory) —
+`./setup.sh` creates this user automatically (see below). **Edit
+`WorkingDirectory=`, `ExecStart=`, `User=` and `Group=` in both `.service`
+files first if the project path differs on this machine, or if you chose
+not to create the dedicated user.**
 
 ## Prerequisites
 
-- `./setup.sh` has already been run at least once (creates `venv/`, installs
-  Python deps, creates `.env`).
+- `./setup.sh` has already been run at least once. As of this version, it:
+  - creates `venv/`, installs Python deps
+  - interactively asks for the handful of `.env` settings every install
+    needs (Jellyfin URL/API key, JellyStream's public URL, etc.), with
+    examples — no more hand-editing `.env` or relying on the web setup
+    wizard for first-time config
+  - creates the `jellystream` system user these services run as, and adds
+    it to the `render`/`video` groups (whichever exist on this machine) so
+    GPU-accelerated transcoding (the channel Hardware Acceleration setting)
+    works out of the box
+  - sets permissions so `jellystream` can read the whole project tree and
+    write `data/` + `logs/` — see "Permissions model" below
+  - also adds *you* (whoever ran the script) to the `jellystream` group, so
+    you can read logs/the database without `sudo`. **Log out and back in
+    (or run `newgrp jellystream`) for that to take effect.**
 - For the web service: `lighttpd`, `php-cgi`, `php-sqlite3`, `php-curl`,
   `php-json` are installed (`setup.sh` offers to do this).
 - `DEBUG=False` in `.env` — with `DEBUG=True`, `run.py` starts uvicorn with
   auto-reload, which manages its own subprocess and complicates how cleanly
   systemd can stop/restart it. Fine for dev, not for a service.
-- If you're using GPU-accelerated transcoding (`hwaccel` on any channel):
-  the user the API service runs as must be in the `render` (and usually
-  `video`) group, e.g. `sudo usermod -aG render,video oarko`. Group changes
-  only take effect for processes started *after* the change — restart the
-  service (not just `daemon-reload`) once you've done this.
+- If your media library lives outside this project directory (the usual
+  case), make sure `jellystream` can actually read it — `setup.sh` can't
+  automate this part since it doesn't know your media layout. Add the user
+  to whatever group owns those files, or adjust the mount's permissions.
+- Re-ran `setup.sh` on a machine where `jellystream` already existed, or
+  changed which groups exist (e.g. installed GPU drivers afterward)? It's
+  idempotent — safe to run again; it'll pick up the new group and skip
+  recreating the user.
+
+## Permissions model
+
+`setup.sh` group-owns the whole project tree by `jellystream` with
+**read+execute only** (`chgrp -R` + `chmod -R g+rX`) — it does not change
+who *owns* anything, so the account that ran setup keeps full control.
+Only `data/` and `logs/` get group **write** too, since those are the only
+things the running services actually need to write. Two narrow exceptions:
+`.env` and `app/web/php/.phpconfig` also get group write, so the web
+frontend's own setup wizard (`setup.php`) — which runs as this same service
+user, under lighttpd/PHP-CGI — can still save changes there. Everything
+else in the tree (code, the venv) stays read-only for the service user.
 
 ## Install
 

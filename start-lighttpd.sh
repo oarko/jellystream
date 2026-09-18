@@ -17,7 +17,10 @@ echo ""
 
 # Configuration
 PHP_CONFIG_FILE="app/web/php/.phpconfig"
-LIGHTTPD_CONFIG="lighttpd.conf"
+# Written to /tmp (not the project directory) so this works under a
+# restricted service user that only has write access to data/ and logs/ —
+# see deploy/README.md. Regenerated on every start, so /tmp is fine.
+LIGHTTPD_CONFIG="/tmp/jellystream-lighttpd.conf"
 LIGHTTPD_PID_FILE="/tmp/jellystream-lighttpd.pid"
 
 # Read port from config file if it exists

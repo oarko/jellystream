@@ -97,7 +97,7 @@ class UpdateScheduleEntryRequest(BaseModel):
 class CollectionItemInput(BaseModel):
     """One media item to add to a collection (sent by the browse UI)."""
     media_item_id: str
-    item_type: str                     # "Movie" | "Series" | "Season" | "Episode"
+    item_type: str                     # "Movie" | "Series" | "Season" | "Episode" | "BoxSet" | "Collection"
     title: str
     library_id: str
     series_name: Optional[str] = None

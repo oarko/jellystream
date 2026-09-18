@@ -184,7 +184,7 @@ Mirrors ScheduleEntry non-time fields for future Phase 2 channel integration.
 - id: Integer (PK)
 - collection_id: Integer FK → collections.id CASCADE DELETE (indexed)
 - media_item_id: String(255) NOT NULL  # Jellyfin item ID, or str(collection.id) for type="Collection"
-- item_type: String(50) NOT NULL  # "Movie" | "Episode" | "Series" | "Season" | "Collection"
+- item_type: String(50) NOT NULL  # "Movie" | "Episode" | "Series" | "Season" | "BoxSet" | "Collection"
 - title: String(255) NOT NULL
 - series_name, season_number, episode_number: nullable
 - library_id: String(255) NOT NULL  # "" for Collection-type items
@@ -248,6 +248,7 @@ See [docs/API.md](docs/API.md) for comprehensive documentation.
 - `GET /api/jellyfin/genres/{library_id}` — Genre names present in a library
 - `GET /api/jellyfin/items/{parent_id}` — Get items with pagination/sorting/genre filter
 - `GET /api/jellyfin/boxsets` — List Jellyfin boxset collections
+- `GET /api/jellyfin/boxsets/{id}/items` — The individual movies inside one boxset (so a single title can be picked)
 - `GET /api/jellyfin/browse?library_id=&type=Movie&search=&year_from=&year_to=&limit=&offset=` — Paginated browse (admin endpoint, returns Path field)
 - `GET /api/jellyfin/series/{series_id}/seasons` — Seasons for a series
 - `GET /api/jellyfin/seasons/{season_id}/episodes` — Episodes for a season (with Path, duration)
@@ -609,7 +610,7 @@ on elements it may have already destroyed).
 - `ChannelCollectionSource` join table — channels reference JellyStream collections as content sources
 - `collection_sources` field added to `CreateChannelRequest` / `UpdateChannelRequest`; `libraries` now optional
 - Channel editor UI: "Collection Sources" section with picker and add/remove buttons
-- `_resolve_collection_to_items()`: Movie/Episode→direct, Series/Season→Jellyfin expand, Collection→recursive
+- `_resolve_collection_to_items()`: Movie/Episode→direct, Series/Season→Jellyfin expand, BoxSet→expand to its movies, Collection→recursive
 - `_get_collection_pool()`: deduplicates across sources, applies same include/exclude genre filters
 - Items with missing stored duration are batch-fetched from Jellyfin in one call before scheduling
 - Genre include filter passes through items with no stored genres (manually curated items)
@@ -746,3 +747,13 @@ python run.py
 *Last Updated: 2026-02-24*
 *Version: 0.6.0*
 *Status: Phase 1 + Collections (1.5) + Collections-as-Channel-Source (2.0) complete*
+
+### Jellyfin BoxSets in Collections
+Jellyfin can return a whole boxset in place of its movies in library listings (its "group movies
+into collections" setting), so a boxset appears as ONE card. The editor stores it as
+`item_type="BoxSet"` (media_item_id = the boxset's Jellyfin id, no duration/file_path) and the
+card has a "▶ Movies" button to drill in and pick single movies. A boxset has no runtime or file,
+so it can't be scheduled itself: `_expand_boxset()` replaces it with the movies inside
+(`/Items?ParentId=<id>&CollapseBoxSetItems=false`). Older rows saved a boxset as `"Movie"`; those
+are recognised at schedule time (no runtime + Jellyfin reports Type=BoxSet) and expanded too.
+Existing schedules need "Regenerate Schedule" to pick the expanded movies up.

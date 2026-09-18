@@ -266,6 +266,7 @@ class JellyfinClient:
         limit: int = 50,
         start_index: int = 0,
         recursive: bool = True,
+        collapse_boxsets: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Paginated item browse for the Collections UI.
@@ -283,6 +284,10 @@ class JellyfinClient:
             limit:         Page size
             start_index:   Pagination offset
             recursive:     Recurse into sub-folders (True for library-level browse)
+            collapse_boxsets: Jellyfin can replace the movies of a boxset with the boxset
+                           itself in library listings (its "group movies into collections"
+                           behaviour). None leaves Jellyfin's default; False forces the
+                           individual movies to be returned.
 
         Returns:
             Dict with Items[], TotalRecordCount, StartIndex
@@ -304,6 +309,8 @@ class JellyfinClient:
                 "Limit": limit,
                 "StartIndex": start_index,
             }
+            if collapse_boxsets is not None:
+                params["CollapseBoxSetItems"] = str(collapse_boxsets).lower()
             if search_term:
                 params["SearchTerm"] = search_term
             if start_year:

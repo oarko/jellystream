@@ -649,14 +649,17 @@ class _Segment:
 
 
 class _Subscriber:
-    __slots__ = ("queue",)
+    __slots__ = ("queue", "end_reason", "joined_at")
 
     def __init__(self):
         self.queue: asyncio.Queue = asyncio.Queue(maxsize=_SUBSCRIBER_QUEUE_CHUNKS)
+        self.end_reason: Optional[str] = None   # set when the SERVER ends this viewer
+        self.joined_at = time.monotonic()
 
 
-def _close_subscriber(sub: "_Subscriber") -> None:
+def _close_subscriber(sub: "_Subscriber", reason: str) -> None:
     """Discard anything buffered and tell the viewer's response to end."""
+    sub.end_reason = reason
     try:
         while True:
             sub.queue.get_nowait()
@@ -693,8 +696,13 @@ class _ChannelHub:
 
     def unsubscribe(self, sub: _Subscriber) -> None:
         self.subscribers.discard(sub)
+        # The server sets end_reason when IT ended the viewer (too slow, pipeline
+        # stopped); otherwise the client went away on its own.
+        reason = sub.end_reason or "client closed the connection"
         logger.info(
-            f"ChannelHub {self.channel_id}: viewer left ({len(self.subscribers)} watching)"
+            f"ChannelHub {self.channel_id}: viewer left after "
+            f"{time.monotonic() - sub.joined_at:.0f}s — {reason} "
+            f"({len(self.subscribers)} watching)"
         )
         if not self.subscribers and self.alive and self._idle_handle is None:
             self._idle_handle = asyncio.get_running_loop().call_later(
@@ -717,10 +725,12 @@ class _ChannelHub:
                 # Dropping chunks would break packet alignment, so a viewer
                 # that can't keep up is disconnected (it can simply reconnect).
                 logger.warning(
-                    f"ChannelHub {self.channel_id}: dropping a viewer that fell too far behind"
+                    f"ChannelHub {self.channel_id}: dropping a viewer that fell too far behind "
+                    f"({_SUBSCRIBER_QUEUE_CHUNKS} chunks, ~{_SUBSCRIBER_QUEUE_CHUNKS * _TS_CHUNK // 1_000_000} MB, "
+                    f"unread — client stalled or paused)"
                 )
                 self.subscribers.discard(sub)
-                _close_subscriber(sub)
+                _close_subscriber(sub, "server dropped it: not reading fast enough (stalled/paused?)")
 
     # ── schedule lookup ──────────────────────────────────────────────────────
 
@@ -912,7 +922,7 @@ class _ChannelHub:
             if cur is not None:
                 await cur.cancel()
             for sub in list(self.subscribers):
-                _close_subscriber(sub)
+                _close_subscriber(sub, "the channel pipeline stopped")
             self.subscribers.clear()
             if self._idle_handle is not None:
                 self._idle_handle.cancel()

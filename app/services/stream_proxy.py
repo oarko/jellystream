@@ -399,20 +399,20 @@ async def _play_entry(
     channel's configured transcode settings (max_height / preset / hwaccel),
     yielding MPEG-TS chunks.
 
-    When hwaccel is set, tries up to three tiers in order, each one only
-    if the previous produced zero bytes of output:
-      1. hardware decode + hardware encode (cheapest, but requires the GPU
-         to support the source's codec/profile — many GPUs' fixed-function
-         decoders don't implement older/unusual codecs like legacy MPEG-4
-         Part 2 at all, which is a real hardware gap, not something any
-         ffmpeg flag can work around)
-      2. software decode + hardware encode (works for any source codec,
-         since the encoder only needs raw decoded frames and doesn't care
-         how they were produced — this is what makes hardware encoding
-         actually apply "all the time it's selected", regardless of the
-         source's codec, at the cost of losing only the decode-side saving
-         for that one file)
-      3. full software (libx264) — the final safety net if hardware encode
+    When hwaccel is set, tries up to two tiers in order, the second only if
+    the first produced zero bytes of output or exited abnormally:
+      1. software decode + hardware encode — decode always happens in
+         software (works for any source codec/profile) and only the encode
+         is offloaded to the GPU. This is deliberately the *first* hardware
+         tier, not hardware decode+encode together: real-world testing
+         showed a GPU driver can decode a file "successfully" — no error,
+         no crash, a clean exit code — while silently producing corrupted
+         frames (bad chroma/color data), which nothing in this function can
+         detect (see the "success" check below — it trips neither the
+         zero-byte nor the bad-exit-code condition). Software decode
+         doesn't share that risk anywhere near as much, so hardware decode
+         is not attempted here at all.
+      2. full software (libx264) — the final safety net if hardware encode
          itself is unavailable (bad driver/device), so nothing is ever
          skipped regardless of what's wrong.
     """
@@ -430,10 +430,20 @@ async def _play_entry(
     audio_idx = await _detect_preferred_audio_index(source)
     hwaccel = channel.hwaccel or "none"
 
+    # Deliberately never attempts hw_decode=True (hardware decode) here.
+    # It was tried initially, but real-world testing showed a GPU driver
+    # can decode a file "successfully" — no error, no crash, a normal exit
+    # code — while silently producing corrupted frames (bad chroma/color
+    # data). We have no way to detect that automatically (only zero-byte
+    # output or a bad exit code are checked below, and this trips neither),
+    # so a bad hardware decode can reach a viewer undetected. Software
+    # decode doesn't share that risk profile anywhere near as much, so it's
+    # the first "hardware" tier tried — hwupload after it still gets the
+    # encode (the expensive part for most sources) onto the GPU.
     stages = (
         [("none", True)]
         if hwaccel == "none"
-        else [(hwaccel, True), (hwaccel, False), ("none", True)]
+        else [(hwaccel, False), ("none", True)]
     )
 
     for stage_index, (stage_hwaccel, hw_decode) in enumerate(stages):

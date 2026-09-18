@@ -1,17 +1,17 @@
 """ffmpeg-based stream proxy.
 
-Finds the currently playing ScheduleEntry for a channel, calculates the
-elapsed offset, and pipes the media through ffmpeg starting at that offset.
-This makes the channel behave like real TV — viewers always join mid-show.
-
-When one entry ends the generator automatically transitions to the next
-scheduled entry so the stream runs continuously without the client
-needing to reconnect.
+One shared pipeline per channel: the first viewer starts it, later viewers
+attach to the same live MPEG-TS stream instead of spawning another ffmpeg,
+and it stops shortly after the last viewer leaves. The pipeline plays the
+channel's schedule entry by entry (joining the current one at the correct
+offset, like real TV) and starts the next entry's ffmpeg just before the
+current one ends so there is no gap at the boundary. See _ChannelHub.
 """
 
 import asyncio
 import json
 import os
+import time
 from asyncio.subprocess import PIPE
 from datetime import datetime, timezone
 from typing import Optional
@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.core.config import settings
+from app.core.database import AsyncSessionLocal
 from app.core.logging_config import get_logger
 from app.integrations.jellyfin import JellyfinClient
 from app.models.channel import Channel
@@ -115,9 +116,9 @@ async def get_next_entry(
     this channel's timeline (ordered by start_time), regardless of the
     current wall-clock time.
 
-    Used by _continuous_stream_generator to advance from one entry to the
-    next by playback order rather than by re-deriving position from "now" —
-    see that function's docstring for why that distinction matters.
+    Used by _ChannelHub to advance from one entry to the next by playback
+    order rather than by re-deriving position from "now" — see
+    _ChannelHub._plan_next for why that distinction matters.
     """
     logger.debug(
         f"get_next_entry: channel_id={channel_id}, after entry id={after_entry.id} "
@@ -218,6 +219,7 @@ def _build_ffmpeg_cmd(
     hwaccel: str = "none",
     hwaccel_device: Optional[str] = None,
     hw_decode: bool = True,
+    output_ts_offset: float = 0.0,
 ) -> list:
     """
     Build the ffmpeg command for one schedule entry.
@@ -230,10 +232,18 @@ def _build_ffmpeg_cmd(
     that buffers ahead aggressively (common for live-TV style playback) lets
     ffmpeg race through an entire file in minutes. From ffmpeg's side that's
     a completely normal, clean finish — it really did reach EOF — so
-    _play_entry has no way to tell that apart from a genuine finish, and the
+    _Segment has no way to tell that apart from a genuine finish, and the
     schedule advances immediately, looking exactly like the channel
     "jumping ahead" through content far faster than anyone could be
     watching it.
+
+    output_ts_offset: seconds added to every output timestamp. Each schedule
+        entry is a separate ffmpeg process whose MPEG-TS timestamps would
+        otherwise restart near zero, so the client sees the timeline jump
+        backwards at every item boundary — which ffmpeg-based players (incl.
+        Jellyfin's own live-TV pipeline) commonly fail on. _ChannelHub passes
+        the running total of everything already sent on the channel so the
+        timeline keeps moving forward across items.
 
     max_height: scale down to this height (keeping aspect ratio) if the
         source is taller; None or 0 = pass the native resolution through.
@@ -252,10 +262,9 @@ def _build_ffmpeg_cmd(
         nothing ffmpeg can do about that; it's a real hardware gap, not a
         flag we can work around. Hardware ENCODE has no such dependency on
         the source codec — it just needs raw decoded frames, which software
-        decode always produces regardless of the source format. _play_entry
-        uses this to retry with hw_decode=False before giving up on hardware
-        entirely, so a hardware-incompatible source codec costs only the
-        (usually cheaper) decode-side saving, not all of it.
+        decode always produces regardless of the source format. _Segment
+        always uses hw_decode=False for this reason (a GPU can also decode a
+        file into silently corrupted frames, which can't be detected).
     """
     # When any -map is present ffmpeg disables automatic stream selection, so
     # we must map both video and audio explicitly.  If ffprobe identified a
@@ -346,6 +355,9 @@ def _build_ffmpeg_cmd(
             "-tune", "zerolatency",     # minimize encoder buffering for live use
             "-crf", "20",               # visually lossless at typical bitrates
         ]
+    # A keyframe every 2s: a viewer joining an already-running stream can only
+    # start decoding at one, so this bounds how long they wait.
+    cmd += ["-force_key_frames", "expr:gte(t,n_forced*2)"]
     cmd += ["-maxrate", "8000k", "-bufsize", "4000k"]
 
     # ── Audio — AAC stereo ────────────────────────────────────────────────
@@ -353,6 +365,10 @@ def _build_ffmpeg_cmd(
         "-c:a", "aac",
         "-b:a", "192k",
         "-ac", "2",                    # downmix to stereo
+    ]
+    if output_ts_offset > 0:
+        cmd += ["-output_ts_offset", f"{output_ts_offset:.3f}"]
+    cmd += [
         # ── Output ───────────────────────────────────────────────────────────
         "-f", _OUTPUT_FORMAT,          # MPEG-TS container
         "-loglevel", "warning",
@@ -401,288 +417,573 @@ async def _drain_stderr(process, tail: bytearray, max_tail: int = 4000) -> None:
         pass
 
 
-async def _play_entry(
-    entry: ScheduleEntry,
-    offset_seconds: int,
-    channel: Channel,
-    channel_id: int,
-    chunk_size: int,
-):
-    """
-    Resolve the entry's source and stream it through ffmpeg using the
-    channel's configured transcode settings (max_height / preset / hwaccel),
-    yielding MPEG-TS chunks.
-
-    When hwaccel is set, tries up to two tiers in order, the second only if
-    the first produced zero bytes of output or exited abnormally:
-      1. software decode + hardware encode — decode always happens in
-         software (works for any source codec/profile) and only the encode
-         is offloaded to the GPU. This is deliberately the *first* hardware
-         tier, not hardware decode+encode together: real-world testing
-         showed a GPU driver can decode a file "successfully" — no error,
-         no crash, a clean exit code — while silently producing corrupted
-         frames (bad chroma/color data), which nothing in this function can
-         detect (see the "success" check below — it trips neither the
-         zero-byte nor the bad-exit-code condition). Software decode
-         doesn't share that risk anywhere near as much, so hardware decode
-         is not attempted here at all.
-      2. full software (libx264) — the final safety net if hardware encode
-         itself is unavailable (bad driver/device), so nothing is ever
-         skipped regardless of what's wrong.
-    """
+async def _probe_duration(source: str) -> Optional[float]:
+    """Return the container duration in seconds via ffprobe, or None."""
     try:
-        source = await _resolve_source(entry, channel_id)
-    except Exception as exc:
-        logger.error(
-            f"_play_entry: could not resolve source for entry {entry.id} "
-            f"'{entry.title}': {exc}",
-            exc_info=True,
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            source,
+            stdout=PIPE, stderr=PIPE,
         )
-        await asyncio.sleep(2)  # brief backoff in case Jellyfin is unreachable
-        return
-
-    audio_idx = await _detect_preferred_audio_index(source)
-    hwaccel = channel.hwaccel or "none"
-
-    # Deliberately never attempts hw_decode=True (hardware decode) here.
-    # It was tried initially, but real-world testing showed a GPU driver
-    # can decode a file "successfully" — no error, no crash, a normal exit
-    # code — while silently producing corrupted frames (bad chroma/color
-    # data). We have no way to detect that automatically (only zero-byte
-    # output or a bad exit code are checked below, and this trips neither),
-    # so a bad hardware decode can reach a viewer undetected. Software
-    # decode doesn't share that risk profile anywhere near as much, so it's
-    # the first "hardware" tier tried — hwupload after it still gets the
-    # encode (the expensive part for most sources) onto the GPU.
-    stages = (
-        [("none", True)]
-        if hwaccel == "none"
-        else [(hwaccel, False), ("none", True)]
-    )
-
-    for stage_index, (stage_hwaccel, hw_decode) in enumerate(stages):
-        is_last_stage = stage_index == len(stages) - 1
-
-        cmd = _build_ffmpeg_cmd(
-            source, offset_seconds, audio_idx,
-            max_height=channel.transcode_max_height,
-            preset=channel.transcode_preset,
-            hwaccel=stage_hwaccel,
-            hwaccel_device=channel.hwaccel_device,
-            hw_decode=hw_decode,
-        )
-        logger.debug(
-            f"_play_entry: starting ffmpeg for '{entry.title}' (id={entry.id}), "
-            f"offset={offset_seconds}s, hwaccel={stage_hwaccel}, hw_decode={hw_decode}, "
-            f"audio_stream={audio_idx if audio_idx is not None else 'default'}"
-        )
-
         try:
-            process = await asyncio.create_subprocess_exec(*cmd, stdout=PIPE, stderr=PIPE)
-        except FileNotFoundError:
-            logger.error("_play_entry: ffmpeg not found")
-            return  # Cannot recover — end the stream
-
-        stderr_tail = bytearray()
-        stderr_task = asyncio.create_task(_drain_stderr(process, stderr_tail))
-        bytes_yielded = 0
-        try:
-            while True:
-                chunk = await process.stdout.read(chunk_size)
-                if not chunk:
-                    break
-                bytes_yielded += len(chunk)
-                yield chunk
-        finally:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        except asyncio.TimeoutError:
             try:
-                process.kill()
+                proc.kill()
             except ProcessLookupError:
                 pass
-            await process.wait()
-            stderr_task.cancel()
-            try:
-                await stderr_task
-            except (asyncio.CancelledError, Exception):
-                pass
-
-        # A clean finish needs BOTH some output AND a zero exit code.
-        # bytes_yielded alone isn't enough: a process that gets killed
-        # partway through (e.g. the OOM killer, under combined load from
-        # several concurrently-transcoding channels) still closes its stdout
-        # pipe, which looks identical to a normal EOF if we only check
-        # whether any bytes came out — silently truncating playback to
-        # whatever had been written so far and racing on to the next
-        # scheduled entry as if this one had played in full.
-        returncode = process.returncode
-        success = bytes_yielded > 0 and returncode == 0
-
-        if success:
-            logger.info(
-                f"_play_entry: channel={channel_id} '{entry.title}' finished "
-                f"(hwaccel={stage_hwaccel}, hw_decode={hw_decode}, bytes_yielded={bytes_yielded})"
-            )
-            return
-
-        if is_last_stage:
-            # No further fallback tier to try. Still move on to the next
-            # scheduled entry rather than retrying this one indefinitely —
-            # but say clearly that this was NOT a clean finish, so a crash
-            # doesn't get silently mistaken for the movie having ended.
-            logger.error(
-                f"_play_entry: channel={channel_id} '{entry.title}' gave up after "
-                f"exhausting all fallback tiers (hwaccel={stage_hwaccel}, "
-                f"hw_decode={hw_decode}, returncode={returncode}, "
-                f"bytes_yielded={bytes_yielded}) — moving on to the next scheduled "
-                f"entry. ffmpeg stderr tail: {bytes(stderr_tail)[-2000:]!r}"
-            )
-            return
-
-        # Not the last stage: either produced nothing, or exited abnormally
-        # despite some partial output — either way, try the next, more
-        # conservative tier rather than treating this as a normal finish.
-        logger.error(
-            f"_play_entry: hwaccel={stage_hwaccel} hw_decode={hw_decode} "
-            f"{'produced no output' if bytes_yielded == 0 else f'exited abnormally (returncode={returncode}) after {bytes_yielded} bytes'} "
-            f"for '{entry.title}' (channel={channel_id}), trying next fallback "
-            f"stage. ffmpeg stderr tail: {bytes(stderr_tail)[-2000:]!r}"
-        )
+            await proc.wait()
+            logger.warning(f"_probe_duration: ffprobe timed out for {source!r}")
+            return None
+        value = float(stdout.decode().strip())
+        return value if value > 0 else None
+    except Exception as exc:
+        logger.debug(f"_probe_duration: could not determine duration: {exc}")
+        return None
 
 
-async def _continuous_stream_generator(
-    channel_id: int, db: AsyncSession, chunk_size: int = 65536
-):
+# ── Shared per-channel streaming ─────────────────────────────────────────────
+#
+# One ChannelHub per channel that has at least one viewer. It owns the only
+# ffmpeg pipeline for that channel and fans the resulting MPEG-TS out to every
+# connected viewer, so a second device watching the same channel joins the
+# live stream where it currently is (like real TV) instead of spawning a
+# second encode. Each schedule entry is a _Segment (one ffmpeg process); the
+# next segment is started a few seconds before the current one ends so its
+# first frames are already waiting at the boundary.
+
+_TS_PACKET = 188
+_TS_CHUNK = _TS_PACKET * 348            # ~64 KB — always a whole number of TS packets, so a
+                                        # viewer joining at any chunk starts on a packet boundary
+_SEGMENT_QUEUE_CHUNKS = 200             # ~12 MB of look-ahead per segment
+_SUBSCRIBER_QUEUE_CHUNKS = 400          # ~25 MB per viewer before it's dropped as too slow
+_PREROLL_SECONDS = 3.0                  # start the next ffmpeg this long before the current one ends
+_PREPARE_SECONDS = 12.0                 # look up/probe the next entry this long before it ends
+_HUB_IDLE_GRACE = 15.0                  # keep the pipeline alive this long after the last viewer leaves
+_IDLE = object()
+
+_hubs: dict = {}
+
+
+class _ChannelGone(Exception):
+    """The channel row no longer exists."""
+
+
+class _TranscodeSettings:
+    """Plain snapshot of a channel's transcode settings (no ORM object)."""
+
+    __slots__ = ("max_height", "preset", "hwaccel", "hwaccel_device")
+
+    def __init__(self, channel: Channel):
+        self.max_height = channel.transcode_max_height
+        self.preset = channel.transcode_preset or "veryfast"
+        self.hwaccel = channel.hwaccel or "none"
+        self.hwaccel_device = channel.hwaccel_device
+
+
+class _Segment:
     """
-    Yield MPEG-TS chunks indefinitely, transitioning between schedule entries
-    as each one ends.
+    One schedule entry being encoded by ffmpeg into a bounded queue of
+    TS-aligned chunks. A trailing None marks a normal end. The queue's bound
+    is also the backpressure: ffmpeg blocks (via its pipe) instead of racing
+    ahead if nothing is consuming.
 
-    The channel's transcode settings (hwaccel/preset/max_height) are
-    re-fetched from the database fresh before every entry, not captured once
-    when the connection opens. A connection here can legitimately run for
-    hours across many titles — that's the whole point of this generator —
-    so if settings were only read once, changing a channel's hardware
-    acceleration setting while someone is already watching it would be
-    silently ignored for that viewer's entire remaining session, with
-    nothing in the logs to explain why the UI and the actual running stream
-    disagree. Re-fetching costs one extra indexed query per title (at most
-    a couple of hours apart), which is negligible.
-
-    The *first* entry for a new connection is picked by wall clock (via
-    get_current_entry) so a viewer tuning in mid-show joins at the correct
-    offset, like real broadcast TV.
-
-    Every entry after that is picked by playback order (via get_next_entry)
-    and started at offset 0 — NOT by re-querying wall clock. Schedule entries
-    are sized from Jellyfin's reported RunTimeTicks, which can differ
-    slightly from a file's real playable duration. If we re-derived offset
-    from "now" on every transition, a file that runs even a few seconds
-    longer or shorter than its metadata would leave wall clock out of sync
-    with actual playback, and the next item would start already partway in
-    (or replay the tail of the one that just finished). Following playback
-    order instead of the clock means nothing is ever skipped or repeated —
-    at the cost of this one connection's timeline drifting from the nominal
-    schedule over a long session, which is the far smaller problem.
-
-    If there is a gap in the schedule the generator waits _GAP_POLL_INTERVAL
-    seconds between retries instead of killing the connection.
+    Tries, in order — the second only if the first produced no output or
+    exited abnormally:
+      1. software decode + hardware encode (skipped when hwaccel is "none")
+         Hardware DECODE is deliberately never attempted: a GPU driver can
+         "successfully" decode a file into corrupted frames — no error, clean
+         exit code — and nothing here could detect that.
+      2. full software (libx264)
     """
-    previous_entry: Optional[ScheduleEntry] = None
 
-    while True:
-        offset_seconds = 0
+    def __init__(self, entry, offset_seconds, settings, channel_id, source,
+                 audio_idx, expected_media, ts_offset):
+        self.entry = entry
+        self.offset_seconds = offset_seconds
+        self.settings = settings
+        self.channel_id = channel_id
+        self.source = source
+        self.audio_idx = audio_idx
+        self.expected_media = expected_media   # media seconds this run will produce, or None
+        self.ts_offset = ts_offset             # first timestamp of this segment's output
+        self.queue: asyncio.Queue = asyncio.Queue(maxsize=_SEGMENT_QUEUE_CHUNKS)
+        self.proc_started = time.monotonic()
+        self.wall_elapsed = 0.0
+        self.clean = False
+        self.task = asyncio.create_task(self._run())
 
-        if previous_entry is None:
-            entry = await get_current_entry(channel_id, db)
-            if entry:
-                now = datetime.now(timezone.utc).replace(tzinfo=None)
-                offset_seconds = max(0, int((now - entry.start_time).total_seconds()))
+    def remaining(self) -> Optional[float]:
+        """Seconds of media still to be produced, or None if the length is unknown."""
+        if self.expected_media is None:
+            return None
+        return self.expected_media - (time.monotonic() - self.proc_started)
+
+    def end_offset(self) -> float:
+        """Where the next segment's timestamps should begin so the timeline never steps backwards."""
+        # While still running (the early-start case) the only number available
+        # is the predicted length; once finished, a clean run is exactly that
+        # length and anything else falls back to how long it actually ran.
+        if self.expected_media is not None and (self.clean or not self.task.done()):
+            media = self.expected_media
         else:
-            entry = await get_next_entry(channel_id, previous_entry, db)
-            if not entry:
-                # Schedule hasn't been generated this far ahead yet (background
-                # scheduler runs nightly). Fall back to a wall-clock lookup so
-                # we recover as soon as it catches up, rather than stalling
-                # forever waiting for an entry that starts right after the one
-                # that just played.
-                logger.warning(
-                    f"_continuous_stream_generator: channel {channel_id} ran "
-                    f"past the end of the generated schedule, falling back "
-                    f"to wall-clock lookup"
+            media = self.wall_elapsed
+        return self.ts_offset + media + 0.3
+
+    async def cancel(self) -> None:
+        self.task.cancel()
+        try:
+            await self.task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    async def _run(self) -> None:
+        try:
+            await self._run_stages()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(
+                f"_Segment: unexpected error playing '{self.entry.title}': {exc}",
+                exc_info=True,
+            )
+        await self.queue.put(None)
+
+    async def _run_stages(self) -> None:
+        s = self.settings
+        hwaccel = s.hwaccel
+        stages = [("none", True)] if hwaccel == "none" else [(hwaccel, False), ("none", True)]
+
+        for stage_index, (stage_hwaccel, hw_decode) in enumerate(stages):
+            is_last_stage = stage_index == len(stages) - 1
+            cmd = _build_ffmpeg_cmd(
+                self.source, self.offset_seconds, self.audio_idx,
+                max_height=s.max_height,
+                preset=s.preset,
+                hwaccel=stage_hwaccel,
+                hwaccel_device=s.hwaccel_device,
+                hw_decode=hw_decode,
+                output_ts_offset=self.ts_offset,
+            )
+            logger.debug(
+                f"_Segment: starting ffmpeg for '{self.entry.title}' (id={self.entry.id}), "
+                f"offset={self.offset_seconds}s, hwaccel={stage_hwaccel}, hw_decode={hw_decode}, "
+                f"ts_offset={self.ts_offset:.1f}s, "
+                f"audio_stream={self.audio_idx if self.audio_idx is not None else 'default'}"
+            )
+
+            try:
+                process = await asyncio.create_subprocess_exec(*cmd, stdout=PIPE, stderr=PIPE)
+            except FileNotFoundError:
+                logger.error("_Segment: ffmpeg not found")
+                return
+            self.proc_started = time.monotonic()
+
+            stderr_tail = bytearray()
+            stderr_task = asyncio.create_task(_drain_stderr(process, stderr_tail))
+            sent = 0
+            buf = bytearray()
+            try:
+                while True:
+                    data = await process.stdout.read(65536)
+                    if not data:
+                        break
+                    buf += data
+                    while len(buf) >= _TS_CHUNK:
+                        await self.queue.put(bytes(buf[:_TS_CHUNK]))
+                        del buf[:_TS_CHUNK]
+                        sent += _TS_CHUNK
+                # Flush whole packets; a trailing partial packet (a killed
+                # process) is dropped so the stream stays packet-aligned.
+                usable = len(buf) - (len(buf) % _TS_PACKET)
+                if usable:
+                    await self.queue.put(bytes(buf[:usable]))
+                    sent += usable
+            finally:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                await process.wait()
+                stderr_task.cancel()
+                try:
+                    await stderr_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+            self.wall_elapsed = time.monotonic() - self.proc_started
+            returncode = process.returncode
+
+            # A clean finish needs BOTH output AND a zero exit code: a process
+            # killed part-way (e.g. OOM) still closes its pipe, which looks
+            # like a normal EOF if only the byte count is checked.
+            if sent > 0 and returncode == 0:
+                self.clean = True
+                logger.info(
+                    f"_Segment: channel={self.channel_id} '{self.entry.title}' finished "
+                    f"(hwaccel={stage_hwaccel}, hw_decode={hw_decode}, bytes={sent})"
                 )
-                entry = await get_current_entry(channel_id, db)
-                if entry and entry.id == previous_entry.id:
-                    # Nothing has been scheduled after this entry yet and we
-                    # already played it in full — don't replay it just
-                    # because wall clock still falls inside its old slot.
-                    entry = None
-                elif entry:
+                return
+
+            if is_last_stage:
+                logger.error(
+                    f"_Segment: channel={self.channel_id} '{self.entry.title}' gave up after "
+                    f"exhausting all fallback tiers (hwaccel={stage_hwaccel}, hw_decode={hw_decode}, "
+                    f"returncode={returncode}, bytes={sent}) — moving on to the next scheduled "
+                    f"entry. ffmpeg stderr tail: {bytes(stderr_tail)[-2000:]!r}"
+                )
+                return
+
+            if sent > 0:
+                # Some output already went to viewers; the retry must continue
+                # after it on the timeline rather than restart underneath it.
+                self.ts_offset += self.wall_elapsed + 0.5
+            logger.error(
+                f"_Segment: hwaccel={stage_hwaccel} hw_decode={hw_decode} "
+                f"{'produced no output' if sent == 0 else f'exited abnormally (returncode={returncode}) after {sent} bytes'} "
+                f"for '{self.entry.title}' (channel={self.channel_id}), trying next fallback "
+                f"stage. ffmpeg stderr tail: {bytes(stderr_tail)[-2000:]!r}"
+            )
+
+
+class _Subscriber:
+    __slots__ = ("queue",)
+
+    def __init__(self):
+        self.queue: asyncio.Queue = asyncio.Queue(maxsize=_SUBSCRIBER_QUEUE_CHUNKS)
+
+
+def _close_subscriber(sub: "_Subscriber") -> None:
+    """Discard anything buffered and tell the viewer's response to end."""
+    try:
+        while True:
+            sub.queue.get_nowait()
+    except asyncio.QueueEmpty:
+        pass
+    sub.queue.put_nowait(None)
+
+
+class _ChannelHub:
+    """The single ffmpeg pipeline for one channel, shared by all its viewers."""
+
+    def __init__(self, channel_id: int):
+        self.channel_id = channel_id
+        self.subscribers: set = set()
+        self.task: Optional[asyncio.Task] = None
+        self.alive = True
+        self.current_title: Optional[str] = None
+        self._idle_handle = None
+
+    # ── viewers ──────────────────────────────────────────────────────────────
+
+    def subscribe(self) -> _Subscriber:
+        sub = _Subscriber()
+        self.subscribers.add(sub)
+        if self._idle_handle is not None:
+            self._idle_handle.cancel()
+            self._idle_handle = None
+        if self.task is None or self.task.done():
+            self.task = asyncio.create_task(self._produce())
+        logger.info(
+            f"ChannelHub {self.channel_id}: viewer joined ({len(self.subscribers)} watching)"
+        )
+        return sub
+
+    def unsubscribe(self, sub: _Subscriber) -> None:
+        self.subscribers.discard(sub)
+        logger.info(
+            f"ChannelHub {self.channel_id}: viewer left ({len(self.subscribers)} watching)"
+        )
+        if not self.subscribers and self.alive and self._idle_handle is None:
+            self._idle_handle = asyncio.get_running_loop().call_later(
+                _HUB_IDLE_GRACE, self._stop_if_idle
+            )
+
+    def _stop_if_idle(self) -> None:
+        self._idle_handle = None
+        if not self.subscribers and self.task and not self.task.done():
+            logger.info(
+                f"ChannelHub {self.channel_id}: no viewers for {_HUB_IDLE_GRACE:.0f}s, stopping"
+            )
+            self.task.cancel()
+
+    def _broadcast(self, chunk: bytes) -> None:
+        for sub in list(self.subscribers):
+            try:
+                sub.queue.put_nowait(chunk)
+            except asyncio.QueueFull:
+                # Dropping chunks would break packet alignment, so a viewer
+                # that can't keep up is disconnected (it can simply reconnect).
+                logger.warning(
+                    f"ChannelHub {self.channel_id}: dropping a viewer that fell too far behind"
+                )
+                self.subscribers.discard(sub)
+                _close_subscriber(sub)
+
+    # ── schedule lookup ──────────────────────────────────────────────────────
+
+    async def _plan_next(self, previous_entry):
+        """
+        Pick the next entry to play. Returns (entry, offset_seconds, settings),
+        or None if nothing is scheduled. Raises _ChannelGone if the channel
+        was deleted.
+
+        The first entry is chosen by wall clock, so someone tuning in lands
+        mid-show like real TV. Every entry after that follows playback order
+        and starts at 0 — schedule lengths come from Jellyfin's reported
+        runtime, which can differ slightly from the real file, and re-deriving
+        position from the clock would skip or repeat content. If nothing is
+        scheduled after the previous entry this returns None (a gap).
+        """
+        offset_seconds = 0
+        # Short-lived session per lookup: holding one for the life of a
+        # stream (hours) leaks pooled connections, and the ORM would keep
+        # returning an already-loaded (stale) Channel from its identity map.
+        async with AsyncSessionLocal() as session:
+            if previous_entry is None:
+                entry = await get_current_entry(self.channel_id, session)
+                if entry:
                     now = datetime.now(timezone.utc).replace(tzinfo=None)
                     offset_seconds = max(0, int((now - entry.start_time).total_seconds()))
+            else:
+                # No wall-clock fallback here: if nothing starts after the previous
+                # entry, a clock lookup can only return that same entry or an
+                # earlier one (this pipeline plays slightly ahead of the clock),
+                # i.e. a replay. Report a gap instead; the caller keeps polling
+                # until the nightly job extends the schedule.
+                entry = await get_next_entry(self.channel_id, previous_entry, session)
 
-        if not entry:
-            logger.debug(
-                f"_continuous_stream_generator: gap on channel {channel_id}, "
-                f"waiting {_GAP_POLL_INTERVAL}s"
+            if not entry:
+                return None
+
+            result = await session.execute(select(Channel).where(Channel.id == self.channel_id))
+            channel = result.scalar_one_or_none()
+            if channel is None:
+                raise _ChannelGone()
+            return entry, offset_seconds, _TranscodeSettings(channel)
+
+    async def _prepare(self, entry, offset_seconds):
+        """Resolve the source and probe it. Returns (source, audio_idx, expected_media) or None."""
+        try:
+            source = await _resolve_source(entry, self.channel_id)
+        except Exception as exc:
+            logger.error(
+                f"ChannelHub {self.channel_id}: could not resolve source for entry "
+                f"{entry.id} '{entry.title}': {exc}",
+                exc_info=True,
             )
-            await asyncio.sleep(_GAP_POLL_INTERVAL)
-            continue
+            return None
+        audio_idx, duration = await asyncio.gather(
+            _detect_preferred_audio_index(source), _probe_duration(source)
+        )
+        if duration is None and getattr(entry, "duration", None):
+            duration = float(entry.duration)
+        expected = max(0.0, duration - offset_seconds) if duration else None
+        return source, audio_idx, expected
 
-        # Fresh settings for this specific entry — see docstring above.
-        channel_result = await db.execute(select(Channel).where(Channel.id == channel_id))
-        channel = channel_result.scalar_one_or_none()
-        if not channel:
-            logger.warning(
-                f"_continuous_stream_generator: channel {channel_id} no longer "
-                f"exists, ending stream"
-            )
-            return
+    async def _prepare_next(self, cur: _Segment) -> Optional[_Segment]:
+        """
+        Look up and probe the entry after `cur`, wait until it's nearly time,
+        then launch its ffmpeg so its first output is already buffered when
+        `cur` ends. Returns None if there's nothing to pre-start.
+        """
+        plan = await self._plan_next(cur.entry)
+        if plan is None:
+            return None
+        entry, offset_seconds, settings = plan
+        prepared = await self._prepare(entry, offset_seconds)
+        if prepared is None:
+            return None
+        source, audio_idx, expected = prepared
 
-        async for chunk in _play_entry(entry, offset_seconds, channel, channel_id, chunk_size):
+        wait = (cur.remaining() or 0.0) - _PREROLL_SECONDS
+        if wait > 0:
+            await asyncio.sleep(wait)
+        return _Segment(
+            entry, offset_seconds, settings, self.channel_id, source, audio_idx,
+            expected, ts_offset=cur.end_offset(),
+        )
+
+    # ── the pipeline ─────────────────────────────────────────────────────────
+
+    async def _produce(self) -> None:
+        cur: Optional[_Segment] = None
+        next_task: Optional[asyncio.Task] = None
+        previous_entry = None
+        ts_offset = 0.0
+        gap_logged = False
+        logger.info(f"ChannelHub {self.channel_id}: pipeline started")
+        try:
+            while True:
+                if cur is None:
+                    try:
+                        plan = await self._plan_next(previous_entry)
+                    except _ChannelGone:
+                        logger.warning(f"ChannelHub {self.channel_id}: channel deleted, stopping")
+                        return
+                    if plan is None:
+                        if not gap_logged:
+                            logger.warning(
+                                f"ChannelHub {self.channel_id}: nothing scheduled after the "
+                                f"last entry (schedule needs extending); polling every "
+                                f"{_GAP_POLL_INTERVAL}s"
+                            )
+                            gap_logged = True
+                        await asyncio.sleep(_GAP_POLL_INTERVAL)
+                        continue
+                    gap_logged = False
+                    entry, offset_seconds, settings = plan
+                    prepared = await self._prepare(entry, offset_seconds)
+                    if prepared is None:
+                        previous_entry = entry      # skip an entry we can't open
+                        await asyncio.sleep(2)
+                        continue
+                    source, audio_idx, expected = prepared
+                    cur = _Segment(entry, offset_seconds, settings, self.channel_id,
+                                   source, audio_idx, expected, ts_offset)
+
+                self.current_title = cur.entry.title
+                logger.info(
+                    f"ChannelHub {self.channel_id}: now playing '{cur.entry.title}' "
+                    f"(id={cur.entry.id}, offset={cur.offset_seconds}s)"
+                )
+
+                # Forward this segment to every viewer until it ends.
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(cur.queue.get(), timeout=0.5)
+                    except asyncio.TimeoutError:
+                        chunk = _IDLE
+                    if chunk is None:
+                        break
+                    if chunk is _IDLE:
+                        if cur.task.done() and cur.queue.empty():
+                            break
+                    else:
+                        self._broadcast(chunk)
+
+                    if next_task is None:
+                        remaining = cur.remaining()
+                        if remaining is not None and remaining <= _PREPARE_SECONDS:
+                            next_task = asyncio.create_task(self._prepare_next(cur))
+
+                # This segment is over: pick up where it left off. Let it finish
+                # settling first so its final numbers (clean / elapsed) are set.
+                await asyncio.wait({cur.task}, timeout=5.0)
+                previous_entry = cur.entry
+                ts_offset = cur.end_offset()
+                cur = None
+                if next_task is not None:
+                    try:
+                        cur = await next_task
+                    except _ChannelGone:
+                        return
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.error(
+                            f"ChannelHub {self.channel_id}: preparing the next entry failed: {exc}",
+                            exc_info=True,
+                        )
+                        cur = None
+                    next_task = None
+                await asyncio.sleep(0)   # yield so a burst never starves other tasks
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(f"ChannelHub {self.channel_id}: pipeline crashed: {exc}", exc_info=True)
+        finally:
+            self.alive = False
+            if _hubs.get(self.channel_id) is self:
+                del _hubs[self.channel_id]
+            if next_task is not None:
+                if not next_task.done():
+                    next_task.cancel()
+                    try:
+                        await next_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                elif not next_task.cancelled() and next_task.exception() is None:
+                    pending = next_task.result()
+                    if pending is not None:
+                        await pending.cancel()
+            if cur is not None:
+                await cur.cancel()
+            for sub in list(self.subscribers):
+                _close_subscriber(sub)
+            self.subscribers.clear()
+            if self._idle_handle is not None:
+                self._idle_handle.cancel()
+            logger.info(f"ChannelHub {self.channel_id}: pipeline stopped")
+
+
+async def _subscriber_stream(hub: _ChannelHub, sub: _Subscriber):
+    try:
+        while True:
+            chunk = await sub.queue.get()
+            if chunk is None:
+                break
             yield chunk
+    finally:
+        hub.unsubscribe(sub)
 
-        # Advance by playback order, not wall clock — see docstring above.
-        # This happens whether the entry played fully or _play_entry bailed
-        # out early (bad source, ffmpeg missing) — either way get_next_entry
-        # will move past it rather than retrying it forever.
-        previous_entry = entry
 
-        # Tiny pause to avoid a tight spin if ffmpeg exits instantly (bad source)
-        await asyncio.sleep(0.2)
+async def shutdown_streams() -> None:
+    """Stop every channel pipeline (and its ffmpeg processes). Called on app shutdown."""
+    tasks = [h.task for h in list(_hubs.values()) if h.task and not h.task.done()]
+    for t in tasks:
+        t.cancel()
+    for t in tasks:
+        try:
+            await t
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 async def stream_channel(channel_id: int, db: AsyncSession) -> StreamingResponse:
     """
-    Start a continuous ffmpeg proxy stream for a channel.
-
-    Verifies that something is scheduled right now (returns 404 otherwise),
-    then returns a StreamingResponse backed by _continuous_stream_generator
-    which automatically transitions to the next entry when the current one ends.
+    Attach the caller to a channel's live stream, starting the channel's
+    ffmpeg pipeline if nobody is watching it yet. A second (third, ...) viewer
+    joins the existing pipeline at its current position rather than starting
+    another encode.
     """
     logger.info(f"stream_channel: channel_id={channel_id}")
 
-    channel_result = await db.execute(select(Channel).where(Channel.id == channel_id))
-    channel = channel_result.scalar_one_or_none()
-    if not channel:
-        logger.warning(f"stream_channel: channel {channel_id} not found")
-        raise HTTPException(status_code=404, detail="Channel not found")
+    hub = _hubs.get(channel_id)
+    title = hub.current_title if hub and hub.alive else None
+    offset_header = "live"
 
-    # Initial check — return 404 if nothing is playing so clients don't hang
-    entry = await get_current_entry(channel_id, db)
-    if not entry:
-        logger.warning(f"stream_channel: nothing playing on channel {channel_id}")
-        raise HTTPException(
-            status_code=404, detail="No content scheduled at this time"
-        )
+    if hub is None or not hub.alive:
+        channel_result = await db.execute(select(Channel).where(Channel.id == channel_id))
+        if channel_result.scalar_one_or_none() is None:
+            logger.warning(f"stream_channel: channel {channel_id} not found")
+            raise HTTPException(status_code=404, detail="Channel not found")
 
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    offset_seconds = max(0, int((now - entry.start_time).total_seconds()))
+        # Return 404 up front if nothing is playing so clients don't hang.
+        entry = await get_current_entry(channel_id, db)
+        if not entry:
+            logger.warning(f"stream_channel: nothing playing on channel {channel_id}")
+            raise HTTPException(status_code=404, detail="No content scheduled at this time")
+        title = entry.title
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        offset_header = str(max(0, int((now - entry.start_time).total_seconds())))
 
+        # Re-check: another request may have created the hub while we awaited.
+        hub = _hubs.get(channel_id)
+        if hub is None or not hub.alive:
+            hub = _ChannelHub(channel_id)
+            _hubs[channel_id] = hub
+
+    sub = hub.subscribe()
     return StreamingResponse(
-        _continuous_stream_generator(channel_id, db),
+        _subscriber_stream(hub, sub),
         media_type=_MEDIA_TYPE,
         headers={
             "Cache-Control": "no-cache",
             "X-Channel-Id": str(channel_id),
-            "X-Entry-Title": entry.title.encode("ascii", errors="replace").decode("ascii"),
-            "X-Offset-Seconds": str(offset_seconds),
+            "X-Entry-Title": (title or "").encode("ascii", errors="replace").decode("ascii"),
+            "X-Offset-Seconds": offset_header,
         },
     )

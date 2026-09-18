@@ -169,6 +169,36 @@ def _collection_item_to_dict(item: CollectionItem) -> dict:
     }
 
 
+_ITEM_FIELDS = "RunTimeTicks,Genres,SeriesName,ParentIndexNumber,IndexNumber,Path,MediaSources"
+
+
+async def _expand_boxset(session, client: JellyfinClient, user_id: str, boxset_id: str) -> List[dict]:
+    """
+    Return the playable movies/episodes inside a Jellyfin boxset.
+
+    A boxset has no runtime or file of its own, so it can never be scheduled
+    directly — only the items inside it can.
+    """
+    params = {
+        "ParentId": boxset_id,
+        "Recursive": "true",
+        "IncludeItemTypes": "Movie,Episode",
+        "Fields": _ITEM_FIELDS,
+        "UserId": user_id,
+        "SortBy": "SortName",
+        "SortOrder": "Ascending",
+        # Jellyfin can replace a boxset's movies with the boxset itself in
+        # listings ("group movies into collections"); we want the movies.
+        "CollapseBoxSetItems": "false",
+    }
+    async with session.get(f"{client.base_url}/Items", headers=client.headers, params=params) as resp:
+        resp.raise_for_status()
+        data = await resp.json()
+    items = [i for i in data.get("Items", []) if (i.get("RunTimeTicks") or 0) >= _MIN_TICKS]
+    logger.info(f"_expand_boxset: boxset {boxset_id} → {len(items)} playable items")
+    return items
+
+
 async def _resolve_collection_to_items(
     collection_id: int,
     db: AsyncSession,
@@ -180,6 +210,7 @@ async def _resolve_collection_to_items(
 
     - Movie / Episode rows → converted directly via _collection_item_to_dict()
     - Series / Season rows → Jellyfin admin /Items query to expand to episodes
+    - BoxSet rows         → Jellyfin admin /Items query to expand to the movies inside
     - Collection rows     → recursive resolve (up to depth 3)
     """
     if _depth > 3:
@@ -231,6 +262,18 @@ async def _resolve_collection_to_items(
                         exc_info=True,
                     )
 
+            elif ci.item_type == "BoxSet":
+                try:
+                    resolved.extend(
+                        await _expand_boxset(session, client, user_id, ci.media_item_id)
+                    )
+                except Exception as exc:
+                    logger.error(
+                        f"_resolve_collection_to_items: failed to expand boxset "
+                        f"id={ci.media_item_id}: {exc}",
+                        exc_info=True,
+                    )
+
             elif ci.item_type == "Collection":
                 try:
                     nested = await _resolve_collection_to_items(
@@ -266,10 +309,34 @@ async def _resolve_collection_to_items(
                     item["Id"]: (item.get("RunTimeTicks") or 0)
                     for item in ticks_data.get("Items", [])
                 }
+                type_map = {item["Id"]: item.get("Type") for item in ticks_data.get("Items", [])}
+                expanded: List[dict] = []
                 for d in resolved:
+                    # The collection editor used to store every card as "Movie",
+                    # including boxsets, so an old row can be a boxset in
+                    # disguise. It shows up here as an item with no runtime
+                    # whose type Jellyfin reports as BoxSet.
+                    if type_map.get(d.get("Id", "")) == "BoxSet":
+                        logger.info(
+                            f"_resolve_collection_to_items: '{d.get('Name')}' was saved as "
+                            f"a Movie but is a Jellyfin boxset — expanding it"
+                        )
+                        try:
+                            expanded.extend(
+                                await _expand_boxset(session, client, user_id, d["Id"])
+                            )
+                        except Exception as exc:
+                            logger.error(
+                                f"_resolve_collection_to_items: failed to expand boxset "
+                                f"{d.get('Id')}: {exc}",
+                                exc_info=True,
+                            )
+                        continue
                     fetched = ticks_map.get(d.get("Id", ""), 0)
                     if fetched >= _MIN_TICKS:
                         d["RunTimeTicks"] = fetched
+                    expanded.append(d)
+                resolved = expanded
             except Exception as exc:
                 logger.warning(
                     f"_resolve_collection_to_items: batch duration fetch failed: {exc}"

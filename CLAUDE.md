@@ -184,7 +184,7 @@ Mirrors ScheduleEntry non-time fields for future Phase 2 channel integration.
 - id: Integer (PK)
 - collection_id: Integer FK → collections.id CASCADE DELETE (indexed)
 - media_item_id: String(255) NOT NULL  # Jellyfin item ID, or str(collection.id) for type="Collection"
-- item_type: String(50) NOT NULL  # "Movie" | "Episode" | "Series" | "Season" | "Collection"
+- item_type: String(50) NOT NULL  # "Movie" | "Episode" | "Series" | "Season" | "BoxSet" | "Collection"
 - title: String(255) NOT NULL
 - series_name, season_number, episode_number: nullable
 - library_id: String(255) NOT NULL  # "" for Collection-type items
@@ -248,6 +248,7 @@ See [docs/API.md](docs/API.md) for comprehensive documentation.
 - `GET /api/jellyfin/genres/{library_id}` — Genre names present in a library
 - `GET /api/jellyfin/items/{parent_id}` — Get items with pagination/sorting/genre filter
 - `GET /api/jellyfin/boxsets` — List Jellyfin boxset collections
+- `GET /api/jellyfin/boxsets/{id}/items` — The individual movies inside one boxset (so a single title can be picked)
 - `GET /api/jellyfin/browse?library_id=&type=Movie&search=&year_from=&year_to=&limit=&offset=` — Paginated browse (admin endpoint, returns Path field)
 - `GET /api/jellyfin/series/{series_id}/seasons` — Seasons for a series
 - `GET /api/jellyfin/seasons/{season_id}/episodes` — Episodes for a season (with Path, duration)
@@ -371,21 +372,32 @@ Items with `item_type="Collection"` return `no_path` (no file to verify).
 
 ### Stream Proxy (`app/services/stream_proxy.py`)
 
-1. Finds current ScheduleEntry: `start_time <= now < end_time`
-2. Calculates `offset = now - start_time` in seconds
-3. Prefers `entry.file_path` (direct local file — near-instant seek); falls back to
-   `JellyfinClient.get_stream_url(media_item_id)` (Jellyfin HTTP stream)
-4. Launches ffmpeg:
-   ```
-   ffmpeg -ss {offset} -probesize 262144 -analyzeduration 1000000 -fflags nobuffer
-          -i {source}
-          -vf scale=-2:min(1080,ih) -c:v libx264 -preset veryfast -tune zerolatency
-          -crf 20 -maxrate 8000k -bufsize 4000k
-          -c:a aac -b:a 192k -ac 2
-          -f mpegts -loglevel warning pipe:1
-   ```
-5. Returns `StreamingResponse` (`video/mp2t`) wrapping ffmpeg stdout
-6. `X-Entry-Title` header is ASCII-encoded (non-ASCII chars replaced with `?`) to avoid
+**One shared pipeline per channel (`_ChannelHub`).** The first viewer starts it; further
+viewers attach to the same live MPEG-TS stream (no second ffmpeg) and join at its current
+position. It stops `_HUB_IDLE_GRACE` (15s) after the last viewer leaves, so brief
+reconnects (e.g. Jellyfin's HEAD/probe/GET) don't restart anything.
+
+1. First entry is picked by wall clock (`get_current_entry`, joins mid-show at the right
+   offset); every later entry follows playback order (`get_next_entry`) at offset 0 — never
+   re-derived from the clock (schedule lengths come from Jellyfin metadata and drift).
+   If nothing is scheduled after the last entry it polls (no wall-clock fallback: that can
+   only replay something).
+2. Each entry is a `_Segment` = one ffmpeg process writing TS-aligned (188-byte multiples)
+   chunks into a bounded queue. Prefers `entry.file_path`, else Jellyfin HTTP stream.
+3. **Gapless boundary:** ~12s before the current entry ends the next is looked up/probed;
+   ~3s before, its ffmpeg is launched and its first output waits in its queue.
+4. **Continuous timeline:** every segment after the first gets `-output_ts_offset` = end of
+   the previous one, so MPEG-TS timestamps never step backwards (ffmpeg-based clients,
+   incl. Jellyfin Live TV, fail on a reset to ~0 at each item boundary).
+5. Per-segment fallback: (a) software decode + hardware encode (hardware DECODE is never
+   used — a GPU can decode into silently corrupted frames with a clean exit code),
+   then (b) full libx264. A tier counts as failed on zero output OR a non-zero exit code.
+6. Viewers get a bounded queue each; one that can't keep up is disconnected (dropping
+   chunks would break packet alignment). Keyframes are forced every 2s so a late joiner
+   waits ≤2s to start decoding.
+7. Every DB lookup uses its own short-lived session (never the request's, never held during
+   ffmpeg) — also means channel transcode settings are re-read fresh for every entry.
+8. `X-Entry-Title` header is ASCII-encoded (non-ASCII chars replaced with `?`) to avoid
    latin-1 encoding errors in Starlette headers
 
 ### Background Scheduler (`app/services/scheduler.py`)
@@ -598,7 +610,7 @@ on elements it may have already destroyed).
 - `ChannelCollectionSource` join table — channels reference JellyStream collections as content sources
 - `collection_sources` field added to `CreateChannelRequest` / `UpdateChannelRequest`; `libraries` now optional
 - Channel editor UI: "Collection Sources" section with picker and add/remove buttons
-- `_resolve_collection_to_items()`: Movie/Episode→direct, Series/Season→Jellyfin expand, Collection→recursive
+- `_resolve_collection_to_items()`: Movie/Episode→direct, Series/Season→Jellyfin expand, BoxSet→expand to its movies, Collection→recursive
 - `_get_collection_pool()`: deduplicates across sources, applies same include/exclude genre filters
 - Items with missing stored duration are batch-fetched from Jellyfin in one call before scheduling
 - Genre include filter passes through items with no stored genres (manually curated items)
@@ -654,14 +666,20 @@ It never relies on `getElementById` for elements that were children of the conta
 inline (`container.innerHTML = '<div class="cart-empty">...'`) rather than toggled.
 
 ### ffmpeg Stream Proxy
+Built by `_build_ffmpeg_cmd` (software path shown; VAAPI/QSV/NVENC swap the codec and add
+`hwupload`, decode stays in software):
 ```
-ffmpeg -ss {offset} -probesize 262144 -analyzeduration 1000000 -fflags nobuffer
-       -i {source}
-       -vf scale=-2:min(1080,ih) -c:v libx264 -preset veryfast -tune zerolatency
-       -crf 20 -maxrate 8000k -bufsize 4000k
+ffmpeg -ss {offset} -re -probesize 262144 -analyzeduration 1000000 -fflags nobuffer
+       -i {source} -map 0:v:0 -map 0:a:0
+       -vf scale=-2:min({max_height},ih) -c:v libx264 -preset {preset} -tune zerolatency
+       -crf 20 -force_key_frames expr:gte(t,n_forced*2) -maxrate 8000k -bufsize 4000k
        -c:a aac -b:a 192k -ac 2
-       -f mpegts pipe:1
+       [-output_ts_offset {seconds}] -f mpegts -loglevel warning pipe:1
 ```
+`-re` is essential: without it ffmpeg encodes as fast as the hardware allows and only
+TCP backpressure slows it, so a client that buffers ahead lets a whole movie finish in
+minutes and the schedule "jumps ahead". Transcode settings (max_height/preset/hwaccel)
+are per-channel columns on `Channel`.
 
 ### HTTP Header Encoding
 Starlette encodes response headers as latin-1. Titles with non-ASCII characters
@@ -729,3 +747,13 @@ python run.py
 *Last Updated: 2026-02-24*
 *Version: 0.6.0*
 *Status: Phase 1 + Collections (1.5) + Collections-as-Channel-Source (2.0) complete*
+
+### Jellyfin BoxSets in Collections
+Jellyfin can return a whole boxset in place of its movies in library listings (its "group movies
+into collections" setting), so a boxset appears as ONE card. The editor stores it as
+`item_type="BoxSet"` (media_item_id = the boxset's Jellyfin id, no duration/file_path) and the
+card has a "▶ Movies" button to drill in and pick single movies. A boxset has no runtime or file,
+so it can't be scheduled itself: `_expand_boxset()` replaces it with the movies inside
+(`/Items?ParentId=<id>&CollapseBoxSetItems=false`). Older rows saved a boxset as `"Movie"`; those
+are recognised at schedule time (no runtime + Jellyfin reports Type=BoxSet) and expanded too.
+Existing schedules need "Regenerate Schedule" to pick the expanded movies up.

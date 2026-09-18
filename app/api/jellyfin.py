@@ -180,6 +180,27 @@ async def get_boxsets():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/boxsets/{boxset_id}/items")
+async def get_boxset_items(boxset_id: str):
+    """
+    Return the individual movies (and episodes) inside one Jellyfin boxset, so a
+    single title can be picked instead of the whole collection. Uses the admin
+    /Items endpoint so the Path field is included.
+    """
+    logger.debug(f"get_boxset_items: boxset_id={boxset_id}")
+    client = _make_client()
+    try:
+        return await client.browse_items(
+            parent_id=boxset_id,
+            include_types="Movie,Episode",
+            limit=500,
+            collapse_boxsets=False,
+        )
+    except Exception as e:
+        logger.error(f"get_boxset_items failed for {boxset_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/browse")
 async def browse_items(
     library_id: str = Query(..., description="Jellyfin library/view ID"),

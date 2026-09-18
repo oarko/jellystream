@@ -268,7 +268,8 @@ let browseState = {
     limit: 25,
     totalItems: 0,
     // drill-down
-    mode: 'browse',       // 'browse' | 'seasons' | 'episodes'
+    mode: 'browse',       // 'browse' | 'seasons' | 'episodes' | 'boxset'
+    boxsetId: null, boxsetTitle: '', boxsetLibraryId: '',
     seriesId: null, seriesTitle: '',
     seasonId: null, seasonTitle: '',
     seasonNumber: null,
@@ -395,6 +396,7 @@ function resetDrill() {
     browseState.mode = 'browse';
     browseState.seriesId = null;
     browseState.seasonId = null;
+    browseState.boxsetId = null;
     renderBreadcrumb();
 }
 
@@ -448,6 +450,13 @@ function renderGrid(items, type) {
         const ticks    = item.RunTimeTicks || 0;
         const duration = ticks ? Math.round(ticks / 10000000) : null;
 
+        // Jellyfin can return a whole boxset in place of its movies (its
+        // "group movies into collections" setting). Record what the card really
+        // is: a boxset stored as a "Movie" has no runtime or file, so the
+        // scheduler used to silently drop it.
+        const isBoxSet = item.Type === 'BoxSet';
+        const itemType = isBoxSet ? 'BoxSet' : (isSeries ? 'Series' : 'Movie');
+
         const card = document.createElement('div');
         card.className = `media-card${inCart ? ' selected' : ''}`;
         card.dataset.id = id;
@@ -455,24 +464,91 @@ function renderGrid(items, type) {
             <img src="${esc(imgUrl)}" alt="${esc(title)}" loading="lazy"
                  onerror="this.style.display='none'">
             <div class="card-check">${inCart ? '✓' : ''}</div>
-            ${isSeries ? `<button class="drill-btn" onclick="drillSeries('${esc(id)}','${esc(title)}','${esc(libId)}',event)">▶ Seasons</button>` : ''}
+            ${isSeries && !isBoxSet ? `<button class="drill-btn" onclick="drillSeries('${esc(id)}','${esc(title)}','${esc(libId)}',event)">▶ Seasons</button>` : ''}
+            ${isBoxSet ? `<button class="drill-btn">▶ Movies</button>` : ''}
             <div class="card-info">
                 <div class="card-title" title="${esc(title)}">${esc(title)}</div>
-                <div class="card-meta">${year}</div>
+                <div class="card-meta">${isBoxSet ? 'Collection' : year}</div>
             </div>
         `;
+        if (isBoxSet) {
+            // Listener rather than an inline onclick: titles containing an
+            // apostrophe ("Ocean's Eleven") would break an inline string.
+            card.querySelector('.drill-btn').addEventListener('click',
+                (ev) => drillBoxSet(id, title, libId, ev));
+        }
         card.addEventListener('click', () => toggleCartFromCard(card, {
             media_item_id:  id,
-            item_type:      isSeries ? 'Series' : 'Movie',
+            item_type:      itemType,
             title:          title,
             library_id:     libId,
-            duration:       duration,
+            duration:       isBoxSet ? null : duration,
             genres:         item.Genres ? JSON.stringify(item.Genres) : null,
-            file_path:      extractPath(item),
+            // A boxset's Path is a metadata folder, not a playable file.
+            file_path:      isBoxSet ? null : extractPath(item),
         }));
         grid.appendChild(card);
     }
     area.appendChild(grid);
+}
+
+// ─── Boxset drill-down (pick single movies out of a Jellyfin collection) ──
+async function drillBoxSet(boxsetId, boxsetTitle, libId, event) {
+    event.stopPropagation();   // don't toggle cart
+    browseState.mode            = 'boxset';
+    browseState.boxsetId        = boxsetId;
+    browseState.boxsetTitle     = boxsetTitle;
+    browseState.boxsetLibraryId = libId;
+    showLoading();
+    hidePagination();
+    renderBreadcrumb();
+
+    try {
+        const resp = await fetch(`${API_BASE}/jellyfin/boxsets/${encodeURIComponent(boxsetId)}/items`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        renderBoxSetMovies(data.Items || [], boxsetId, boxsetTitle, libId);
+    } catch (e) {
+        showPlaceholder(`Error loading collection: ${e.message}`);
+    }
+}
+
+function renderBoxSetMovies(items, boxsetId, boxsetTitle, libId) {
+    renderGrid(items, 'Movie');   // one card per movie inside the boxset
+    const area = document.getElementById('media-area');
+
+    const addRow = document.createElement('div');
+    addRow.className = 'add-season-row';
+    const btn = document.createElement('button');
+    btn.id = 'add-boxset-btn';
+    btn.addEventListener('click', () => toggleBoxSetInCart(boxsetId, boxsetTitle, libId));
+    addRow.appendChild(btn);
+    addRow.appendChild(document.createTextNode(' — or click individual movies below'));
+    area.insertBefore(addRow, area.firstChild);
+    updateBoxSetButton(boxsetId);
+}
+
+function updateBoxSetButton(boxsetId) {
+    const btn = document.getElementById('add-boxset-btn');
+    if (!btn) return;
+    const inCart = cart.has(boxsetId);
+    btn.textContent = inCart ? '✓ Whole collection in cart' : '+ Add whole collection';
+    btn.className   = `btn btn-sm ${inCart ? 'btn-secondary' : 'btn-primary'}`;
+}
+
+function toggleBoxSetInCart(boxsetId, boxsetTitle, libId) {
+    if (cart.has(boxsetId)) {
+        cart.delete(boxsetId);
+    } else {
+        cart.set(boxsetId, {
+            media_item_id: boxsetId,
+            item_type:     'BoxSet',
+            title:         boxsetTitle,
+            library_id:    libId,
+        });
+    }
+    updateBoxSetButton(boxsetId);
+    renderCart();
 }
 
 // ─── Season drill-down ────────────────────────────────────────────────────
@@ -830,7 +906,7 @@ function renderCart() {
         const typeCls   = {
             Movie:'type-movie', Series:'type-series',
             Season:'type-season', Episode:'type-episode',
-            Collection:'type-collection',
+            Collection:'type-collection', BoxSet:'type-collection',
         }[typeLabel] || '';
         const subtitle  = item.series_name
             ? (item.season_number ? `S${String(item.season_number).padStart(2,'0')}` : '') + ' ' + item.series_name
@@ -924,6 +1000,9 @@ function renderBreadcrumb() {
     }
     if (browseState.mode === 'episodes') {
         parts.push({ label: browseState.seasonTitle, action: null });
+    }
+    if (browseState.mode === 'boxset') {
+        parts.push({ label: browseState.boxsetTitle, action: null });
     }
 
     bc.innerHTML = parts.map((p, i) => {

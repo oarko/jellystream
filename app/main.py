@@ -63,6 +63,8 @@ async def shutdown_event():
     logger.info("Shutting down JellyStream...")
     from app.services.scheduler import stop_scheduler
     stop_scheduler()
+    from app.services.stream_proxy import shutdown_streams
+    await shutdown_streams()
     logger.info("JellyStream shutdown complete")
 
 

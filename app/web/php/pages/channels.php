@@ -12,7 +12,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         exit;
     }
     if ($_POST['action'] === 'generate' && isset($_POST['channel_id'])) {
-        $api->generateChannelSchedule(intval($_POST['channel_id']));
+        // reset=true: rebuild from now, so the current sources are what the guide shows
+        $api->generateChannelSchedule(intval($_POST['channel_id']), 7, true);
         header('Location: channels.php?generated=1');
         exit;
     }
@@ -126,10 +127,10 @@ $channels = $response['success'] ? ($response['data'] ?? []) : [];
                 <td>
                     <div class="actions">
                         <a href="channel_edit.php?id=<?php echo $ch['id']; ?>" class="btn btn-secondary" style="font-size:12px;">Edit</a>
-                        <form method="POST" style="display:inline;" onsubmit="return confirm('Generate schedule for this channel?');">
+                        <form method="POST" style="display:inline;" onsubmit="return confirm('Rebuild this channel\'s schedule from now? The existing schedule (including what is airing next) is replaced using the channel\'s current libraries, collections and filters.');">
                             <input type="hidden" name="action" value="generate">
                             <input type="hidden" name="channel_id" value="<?php echo $ch['id']; ?>">
-                            <button type="submit" class="btn btn-success" style="font-size:12px;">Generate</button>
+                            <button type="submit" class="btn btn-success" style="font-size:12px;">Regenerate</button>
                         </form>
                         <form method="POST" style="display:inline;" onsubmit="return confirm('Delete channel \'<?php echo addslashes($ch['name']); ?>\'?');">
                             <input type="hidden" name="action" value="delete">

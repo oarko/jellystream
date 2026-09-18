@@ -39,7 +39,8 @@ URLs use this value so Jellyfin can reach JellyStream from a different machine.
 ## Channels  `/api/channels/`
 
 Channels are virtual TV channels. Each channel has one or more Jellyfin libraries
-and optional genre filters that drive automatic schedule generation.
+and/or JellyStream Collections as content sources, plus optional genre filters that
+drive automatic schedule generation.
 
 ### List channels
 
@@ -66,7 +67,7 @@ and optional genre filters that drive automatic schedule generation.
 
 **GET** `/api/channels/{id}`
 
-Returns channel with its libraries and genre filters.
+Returns channel with its libraries, collection sources, and genre filters.
 
 ```json
 {
@@ -78,6 +79,9 @@ Returns channel with its libraries and genre filters.
   "schedule_type": "genre_auto",
   "libraries": [
     { "library_id": "abc123", "library_name": "Movies", "collection_type": "movies" }
+  ],
+  "collection_sources": [
+    { "collection_id": 2, "collection_name": "Sci-Fi Favourites" }
   ],
   "genre_filters": [
     { "genre": "Action", "content_type": "both", "filter_type": "include" }
@@ -91,25 +95,30 @@ Returns channel with its libraries and genre filters.
 
 ```json
 {
-  "name": "Action Movies",
-  "description": "Non-stop action",
-  "channel_number": "100.1",
+  "name": "Curated Sci-Fi",
+  "channel_number": "101",
   "channel_type": "video",
   "schedule_type": "genre_auto",
-  "libraries": [
-    { "library_id": "abc123", "library_name": "Movies", "collection_type": "movies" }
+  "libraries": [],
+  "collection_sources": [
+    { "collection_id": 2, "collection_name": "Sci-Fi Favourites" }
   ],
   "genre_filters": [
-    { "genre": "Action", "content_type": "both", "filter_type": "include" },
-    { "genre": "Animation", "content_type": "both", "filter_type": "exclude" }
+    { "genre": "Science Fiction", "content_type": "both", "filter_type": "include" }
   ]
 }
 ```
 
+`libraries` and `collection_sources` are both optional (default `[]`). At least one
+of the two must be provided.
+
 `channel_type`: `"video"` (default). `"music"` is reserved for a future release.
 `schedule_type`: `"genre_auto"` (default) or `"manual"`.
 `content_type` in genre filters: `"movie"`, `"episode"`, or `"both"`.
-`filter_type` in genre filters: `"include"` (default) fetches matching content; `"exclude"` removes matching items from the pool after fetching.
+`filter_type` in genre filters: `"include"` fetches matching content; `"exclude"` removes matching items from the pool after fetching.
+
+Genre filters apply equally to library items and collection items. Collection items with
+no stored genre metadata pass through include filters (they were manually curated).
 
 On creation, a 7-day schedule is automatically generated if `schedule_type` is `"genre_auto"`.
 
@@ -297,6 +306,165 @@ Returns all genre names present in the given library. Used by the channel editor
 
 ---
 
+## Collections  `/api/collections/`
+
+JellyStream Collections are curated lists of media items. They can be used as content
+sources for channels (alongside or instead of Jellyfin libraries) and can be imported
+from Jellyfin boxsets.
+
+### List collections
+
+**GET** `/api/collections/`
+
+```json
+[
+  { "id": 1, "name": "Sci-Fi Favourites", "item_count": 24, "jellyfin_id": null,
+    "created_at": "2026-02-24T10:00:00", "updated_at": "2026-02-24T10:00:00" }
+]
+```
+
+### Get collection with items
+
+**GET** `/api/collections/{id}`
+
+Returns the collection metadata plus all items.
+
+### Create collection
+
+**POST** `/api/collections/`
+
+```json
+{
+  "name": "Sci-Fi Favourites",
+  "description": "Optional description",
+  "items": [
+    {
+      "media_item_id": "abc123",
+      "item_type": "Movie",
+      "title": "Alien",
+      "library_id": "lib456",
+      "file_path": "/media/Movies/Alien/Alien.mkv",
+      "duration": 7080,
+      "genres": "[\"Science Fiction\",\"Horror\"]",
+      "sort_order": 0
+    }
+  ]
+}
+```
+
+Each item is enriched with NFO sidecar metadata (`description`, `content_rating`,
+`air_date`) and a local thumbnail path at save time.
+
+### Update collection
+
+**PUT** `/api/collections/{id}`
+
+All fields optional. If `items` is provided, all existing items are replaced.
+
+### Delete collection
+
+**DELETE** `/api/collections/{id}`
+
+Cascades to all `CollectionItem` rows.
+
+### Remove single item
+
+**DELETE** `/api/collections/{id}/items/{item_id}`
+
+### Verify collection files
+
+**GET** `/api/collections/{id}/verify`
+
+Checks every item's `file_path` on the local filesystem.
+
+```json
+{
+  "collection_id": 1,
+  "summary": { "ok": 22, "moved": 1, "deleted": 1, "no_path": 0 },
+  "items": [
+    { "item_id": 5, "title": "Alien", "item_type": "Movie", "status": "ok" },
+    { "item_id": 6, "title": "Aliens", "item_type": "Movie", "status": "moved",
+      "new_path": "/mnt/nas/Movies/Aliens/Aliens.mkv" },
+    { "item_id": 7, "title": "Alien³", "item_type": "Movie", "status": "deleted" }
+  ]
+}
+```
+
+Status values: `ok`, `moved` (file missing locally but Jellyfin has a new path),
+`deleted` (not found anywhere), `no_path` (no path stored).
+
+### Import Jellyfin boxset
+
+**POST** `/api/collections/import/{boxset_id}`
+
+Fetches all items from a Jellyfin boxset, enriches them, and creates a new Collection.
+Returns `409` if the boxset has already been imported.
+
+```json
+{ "id": 3, "message": "Imported 'Alien Collection' with 6 items" }
+```
+
+### Collection item thumbnail
+
+**GET** `/api/collections/thumbnail/{item_id}`
+
+Serves the local `.jpg` sidecar for a `CollectionItem`. Returns 404 if unavailable.
+
+---
+
+## Jellyfin Browse  `/api/jellyfin/`
+
+Additional endpoints for the collection editor UI.
+
+### List boxsets
+
+**GET** `/api/jellyfin/boxsets`
+
+Returns all Jellyfin boxset collections.
+
+```json
+[
+  { "Id": "box123", "Name": "Alien Collection", "ImageTag": "img456" }
+]
+```
+
+### Browse items
+
+**GET** `/api/jellyfin/browse`
+
+| Query param | Default | Description |
+|---|---|---|
+| `library_id` | — | Parent library ID |
+| `type` | `Movie` | `Movie` or `Series` |
+| `search` | — | Title search term |
+| `year_from` | — | Minimum production year |
+| `year_to` | — | Maximum production year |
+| `limit` | `24` | Items per page |
+| `offset` | `0` | Pagination offset |
+
+Returns items with `Path` and `RunTimeTicks` (uses admin endpoint).
+
+### Series seasons
+
+**GET** `/api/jellyfin/series/{series_id}/seasons`
+
+### Season episodes
+
+**GET** `/api/jellyfin/seasons/{season_id}/episodes`
+
+### Item image proxy
+
+**GET** `/api/jellyfin/items/{item_id}/image`
+
+| Query param | Default | Description |
+|---|---|---|
+| `type` | `Primary` | Image type |
+| `maxWidth` | `400` | Max image width |
+
+Proxies the image bytes from Jellyfin, hiding the API key from the browser.
+
+---
+
 ## Live TV  `/api/livetv/`
 
 > **Route ordering:** `/m3u/all` and `/xmltv/all` are registered *before*
@@ -461,9 +629,9 @@ To force an immediate re-download:
 | `JELLYFIN_URL` | — | Jellyfin server URL |
 | `JELLYFIN_API_KEY` | — | Jellyfin API key (admin recommended) |
 | `JELLYFIN_USER_ID` | auto | Optional; auto-detected from first user |
-| `JELLYSTREAM_PUBLIC_URL` | — | Network-accessible URL for M3U/XMLTV/thumbnail URLs |
-| `MEDIA_PATH_MAP` | — | Path prefix rewrite (`/jf/prefix:/local/prefix`) |
-| `HOST` | `0.0.0.0` | Bind address |
+| `JELLYSTREAM_PUBLIC_URL` | — | Network IP/hostname used in M3U stream URLs and XMLTV icons so Jellyfin can reach JellyStream. Must NOT be `localhost`. Example: `http://192.168.1.100:8000` |
+| `MEDIA_PATH_MAP` | — | Path prefix rewrite (`/jf/prefix:/local/prefix`). Only needed when JellyStream and Jellyfin mount media at different paths. |
+| `HOST` | `0.0.0.0` | Bind address. **Keep as `0.0.0.0`** — binds to all interfaces so both the PHP web UI (via localhost) and Jellyfin (via network IP) can reach the API. Setting a specific IP breaks PHP→API calls. |
 | `PORT` | `8000` | Listen port |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `PREFERRED_AUDIO_LANGUAGE` | `eng` | ISO 639-2 code for preferred audio track (`eng`, `jpn`, `fre`, …) |

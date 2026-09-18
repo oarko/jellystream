@@ -280,6 +280,72 @@ $public_url_is_local = in_array(
             <div class="genre-loading" id="genre-loading"></div>
         </div>
 
+        <!-- Transcode Settings -->
+        <h2 style="margin-top:24px;">Transcode Settings</h2>
+        <div class="hint" style="margin-bottom:12px;">
+            Controls the ffmpeg command used to stream this channel. Tune these if
+            playback is struggling to keep up (e.g. 4K sources) or to offload
+            encoding to a GPU.
+        </div>
+        <?php
+        $tc_max_height = $channel['transcode_max_height'] ?? 1080;
+        $tc_preset     = $channel['transcode_preset'] ?? 'veryfast';
+        $tc_hwaccel    = $channel['hwaccel'] ?? 'none';
+        $tc_hw_device  = $channel['hwaccel_device'] ?? '';
+        $height_options = [
+            0    => 'No limit — pass through source resolution',
+            2160 => '2160p (4K)',
+            1080 => '1080p',
+            720  => '720p',
+            480  => '480p',
+        ];
+        $preset_options = ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium'];
+        ?>
+        <div class="form-group">
+            <label>Max Resolution</label>
+            <select id="ch-tc-max-height">
+                <?php foreach ($height_options as $val => $label): ?>
+                <option value="<?php echo $val; ?>" <?php echo (intval($tc_max_height) === $val) ? 'selected' : ''; ?>>
+                    <?php echo htmlspecialchars($label); ?>
+                </option>
+                <?php endforeach; ?>
+            </select>
+            <div class="hint">Sources taller than this are scaled down; shorter sources are left alone.</div>
+        </div>
+        <div class="form-group">
+            <label>Encode Preset</label>
+            <select id="ch-tc-preset">
+                <?php foreach ($preset_options as $p): ?>
+                <option value="<?php echo $p; ?>" <?php echo ($tc_preset === $p) ? 'selected' : ''; ?>><?php echo ucfirst($p); ?></option>
+                <?php endforeach; ?>
+            </select>
+            <div class="hint">
+                Faster presets use less CPU per stream at a small quality cost. Ignored
+                when Hardware Acceleration is set to VAAPI (no equivalent concept there).
+            </div>
+        </div>
+        <div class="form-group">
+            <label>Hardware Acceleration</label>
+            <select id="ch-tc-hwaccel" onchange="onHwaccelChange()">
+                <option value="none"  <?php echo ($tc_hwaccel === 'none')  ? 'selected' : ''; ?>>None (software / libx264)</option>
+                <option value="vaapi" <?php echo ($tc_hwaccel === 'vaapi') ? 'selected' : ''; ?>>VAAPI (Intel / AMD GPUs)</option>
+                <option value="qsv"   <?php echo ($tc_hwaccel === 'qsv')   ? 'selected' : ''; ?>>Intel Quick Sync (QSV)</option>
+                <option value="nvenc" <?php echo ($tc_hwaccel === 'nvenc') ? 'selected' : ''; ?>>NVIDIA NVENC</option>
+            </select>
+            <div class="hint">
+                Offloads decode/encode to a GPU, freeing up CPU for other streams.
+                For an Intel Arc GPU, VAAPI is the recommended starting point on Linux.
+                If a hardware encode fails to start, this stream automatically retries
+                once in software rather than skipping the content.
+            </div>
+        </div>
+        <div class="form-group" id="ch-tc-device-group" <?php echo ($tc_hwaccel === 'none') ? 'hidden' : ''; ?>>
+            <label>Hardware Device (optional)</label>
+            <input type="text" id="ch-tc-hw-device" value="<?php echo htmlspecialchars($tc_hw_device); ?>"
+                   placeholder="/dev/dri/renderD128">
+            <div class="hint">Leave blank to auto-detect. Set this if the machine has more than one GPU.</div>
+        </div>
+
         <?php if ($is_edit): ?>
         <!-- Schedule actions -->
         <div style="margin-top:24px;border-top:1px solid #333;padding-top:16px;">
@@ -444,6 +510,12 @@ const VIDEO_TYPES = new Set(['movies', 'tvshows']);
 
 function onTypeChange() {
     filterLibraryPicker();
+}
+
+// ── Transcode settings ──────────────────────────────────────────────────────────
+function onHwaccelChange() {
+    const hwaccel = document.getElementById('ch-tc-hwaccel').value;
+    document.getElementById('ch-tc-device-group').hidden = (hwaccel === 'none');
 }
 
 function filterLibraryPicker() {
@@ -722,15 +794,19 @@ async function saveChannel() {
     }
 
     const payload = {
-        name:               name,
-        description:        document.getElementById('ch-desc').value.trim() || null,
-        channel_number:     document.getElementById('ch-num').value.trim() || null,
-        enabled:            document.getElementById('ch-enabled').checked,
-        channel_type:       document.getElementById('ch-type').value,
-        schedule_type:      document.getElementById('ch-schedule-type').value,
-        libraries:          libs,
-        genre_filters:      getGenreFilters(),
-        collection_sources: colSrcs,
+        name:                 name,
+        description:          document.getElementById('ch-desc').value.trim() || null,
+        channel_number:       document.getElementById('ch-num').value.trim() || null,
+        enabled:              document.getElementById('ch-enabled').checked,
+        channel_type:         document.getElementById('ch-type').value,
+        schedule_type:        document.getElementById('ch-schedule-type').value,
+        libraries:            libs,
+        genre_filters:        getGenreFilters(),
+        collection_sources:   colSrcs,
+        transcode_max_height: parseInt(document.getElementById('ch-tc-max-height').value, 10),
+        transcode_preset:     document.getElementById('ch-tc-preset').value,
+        hwaccel:              document.getElementById('ch-tc-hwaccel').value,
+        hwaccel_device:       document.getElementById('ch-tc-hw-device').value.trim() || null,
     };
 
     const url    = IS_EDIT ? `${API_BASE}/channels/${CHANNEL_ID}` : `${API_BASE}/channels/`;

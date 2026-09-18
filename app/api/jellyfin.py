@@ -36,6 +36,7 @@ async def get_users():
         users = await client.get_users()
         return {"users": users}
     except Exception as e:
+        logger.error(f"get_users failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -61,6 +62,7 @@ async def get_libraries():
         libraries = await client.get_libraries()
         return {"libraries": libraries}
     except Exception as e:
+        logger.error(f"get_libraries failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -87,6 +89,7 @@ async def get_library_genres(library_id: str):
         genres = await client.get_genres(library_id)
         return {"genres": genres}
     except Exception as e:
+        logger.error(f"get_library_genres failed for library {library_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -146,6 +149,7 @@ async def get_library_items(
         )
         return items
     except Exception as e:
+        logger.error(f"get_library_items failed for parent {parent_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

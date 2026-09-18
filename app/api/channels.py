@@ -16,6 +16,24 @@ from app.api.schemas import CreateChannelRequest, UpdateChannelRequest, Register
 logger = get_logger(__name__)
 router = APIRouter()
 
+# Allowed values for channel transcode settings — validated on create/update
+# so an invalid value never reaches ffmpeg command construction downstream.
+VALID_PRESETS = {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium"}
+VALID_HWACCEL = {"none", "vaapi", "qsv", "nvenc"}
+
+
+def _validate_transcode_settings(preset: str = None, hwaccel: str = None) -> None:
+    if preset is not None and preset not in VALID_PRESETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid transcode_preset '{preset}'. Must be one of: {sorted(VALID_PRESETS)}",
+        )
+    if hwaccel is not None and hwaccel not in VALID_HWACCEL:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid hwaccel '{hwaccel}'. Must be one of: {sorted(VALID_HWACCEL)}",
+        )
+
 
 def _channel_to_dict(channel: Channel) -> dict:
     """Serialize a Channel ORM object to a dict."""
@@ -30,6 +48,10 @@ def _channel_to_dict(channel: Channel) -> dict:
         "tuner_host_id": channel.tuner_host_id,
         "listing_provider_id": channel.listing_provider_id,
         "schedule_generated_through": channel.schedule_generated_through,
+        "transcode_max_height": channel.transcode_max_height,
+        "transcode_preset": channel.transcode_preset,
+        "hwaccel": channel.hwaccel,
+        "hwaccel_device": channel.hwaccel_device,
         "created_at": channel.created_at,
         "updated_at": channel.updated_at,
     }
@@ -121,8 +143,10 @@ async def create_channel(data: CreateChannelRequest, db: AsyncSession = Depends(
         f"create_channel called: name='{data.name}', "
         f"libraries={len(data.libraries)}, "
         f"genre_filters={len(data.genre_filters or [])}, "
-        f"schedule_type={data.schedule_type}"
+        f"schedule_type={data.schedule_type}, hwaccel={data.hwaccel}"
     )
+
+    _validate_transcode_settings(data.transcode_preset, data.hwaccel)
 
     channel = Channel(
         name=data.name,
@@ -130,6 +154,10 @@ async def create_channel(data: CreateChannelRequest, db: AsyncSession = Depends(
         channel_number=data.channel_number,
         channel_type=data.channel_type,
         schedule_type=data.schedule_type,
+        transcode_max_height=(data.transcode_max_height or None),
+        transcode_preset=data.transcode_preset,
+        hwaccel=data.hwaccel,
+        hwaccel_device=(data.hwaccel_device or None),
     )
     db.add(channel)
     await db.flush()  # Assign ID without committing
@@ -205,6 +233,8 @@ async def update_channel(
         logger.warning(f"update_channel: channel {channel_id} not found")
         raise HTTPException(status_code=404, detail="Channel not found")
 
+    _validate_transcode_settings(data.transcode_preset, data.hwaccel)
+
     if data.name is not None:
         channel.name = data.name
     if data.description is not None:
@@ -217,6 +247,18 @@ async def update_channel(
         channel.channel_type = data.channel_type
     if data.schedule_type is not None:
         channel.schedule_type = data.schedule_type
+
+    # transcode_max_height: None means "leave unchanged" (can't tell an
+    # omitted field from an explicit null otherwise); send 0 to explicitly
+    # clear an existing cap back to "no limit".
+    if data.transcode_max_height is not None:
+        channel.transcode_max_height = data.transcode_max_height or None
+    if data.transcode_preset is not None:
+        channel.transcode_preset = data.transcode_preset
+    if data.hwaccel is not None:
+        channel.hwaccel = data.hwaccel
+    if data.hwaccel_device is not None:
+        channel.hwaccel_device = data.hwaccel_device or None
 
     if data.libraries is not None:
         await db.execute(

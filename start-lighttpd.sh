@@ -150,10 +150,15 @@ echo -e "${YELLOW}Make sure the FastAPI backend is running on port ${API_PORT}!$
 echo -e "${YELLOW}Press Ctrl+C to stop${NC}"
 echo ""
 
-# Start Lighttpd (requires sudo for ports < 1024)
+# Start Lighttpd (requires sudo for ports < 1024).
+# `exec` replaces this script's process with lighttpd itself instead of
+# running it as a child — without that, a process supervisor (systemd,
+# etc.) that sends SIGTERM to this script's PID would not reliably stop
+# lighttpd too, since bash doesn't automatically forward signals to a
+# foreground child it launched without exec.
 if [ "$PHP_PORT" -lt 1024 ]; then
     echo -e "${YELLOW}Port $PHP_PORT requires sudo${NC}"
-    sudo lighttpd -D -f "$LIGHTTPD_CONFIG"
+    exec sudo lighttpd -D -f "$LIGHTTPD_CONFIG"
 else
-    lighttpd -D -f "$LIGHTTPD_CONFIG"
+    exec lighttpd -D -f "$LIGHTTPD_CONFIG"
 fi

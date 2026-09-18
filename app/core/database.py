@@ -69,6 +69,10 @@ async def init_db():
         "ALTER TABLE schedule_entries ADD COLUMN air_date VARCHAR(20)",
         "ALTER TABLE channels ADD COLUMN channel_type VARCHAR(20) DEFAULT 'video'",
         "ALTER TABLE genre_filters ADD COLUMN filter_type VARCHAR(10) DEFAULT 'include'",
+        "ALTER TABLE channels ADD COLUMN transcode_max_height INTEGER DEFAULT 1080",
+        "ALTER TABLE channels ADD COLUMN transcode_preset VARCHAR(20) DEFAULT 'veryfast'",
+        "ALTER TABLE channels ADD COLUMN hwaccel VARCHAR(20) DEFAULT 'none'",
+        "ALTER TABLE channels ADD COLUMN hwaccel_device VARCHAR(255)",
     ]
     for stmt in _migrations:
         try:

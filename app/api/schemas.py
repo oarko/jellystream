@@ -36,6 +36,11 @@ class CreateChannelRequest(BaseModel):
     libraries: List[LibraryConfig] = []
     genre_filters: Optional[List[GenreFilterConfig]] = None
     collection_sources: Optional[List[CollectionSourceConfig]] = None
+    # Transcode settings — see app/models/channel.py for field semantics
+    transcode_max_height: Optional[int] = 1080
+    transcode_preset: str = "veryfast"
+    hwaccel: str = "none"               # "none" | "vaapi" | "qsv" | "nvenc"
+    hwaccel_device: Optional[str] = None
 
 
 class UpdateChannelRequest(BaseModel):
@@ -49,6 +54,14 @@ class UpdateChannelRequest(BaseModel):
     libraries: Optional[List[LibraryConfig]] = None
     genre_filters: Optional[List[GenreFilterConfig]] = None
     collection_sources: Optional[List[CollectionSourceConfig]] = None
+    # Transcode settings — omit (leave as null/absent) to leave unchanged.
+    # transcode_max_height is the one exception: since NULL in the database
+    # already means "no downscale", None here means "don't touch this field" —
+    # to explicitly clear an existing cap back to "no limit", send 0.
+    transcode_max_height: Optional[int] = None
+    transcode_preset: Optional[str] = None
+    hwaccel: Optional[str] = None
+    hwaccel_device: Optional[str] = None
 
 
 # ─── Schedule Schemas ─────────────────────────────────────────────────────────

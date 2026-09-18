@@ -60,6 +60,8 @@ class Settings(BaseSettings):
 
     # Logging
     LOG_LEVEL: str = "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+    LOG_TO_CONSOLE: bool = True  # set False under systemd to avoid duplicating
+    # the same lines into both ./logs/jellystream_*.log and the journal
     LOG_TO_FILE: bool = True
     LOG_FILE_PATH: str = "./logs"
     LOG_FILE_MAX_BYTES: int = 10485760  # 10MB

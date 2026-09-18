@@ -24,6 +24,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.core.logging_config import get_logger
 from app.integrations.jellyfin import JellyfinClient
+from app.models.channel import Channel
 from app.models.schedule_entry import ScheduleEntry
 
 logger = get_logger(__name__)
@@ -35,6 +36,27 @@ _MEDIA_TYPE = "video/mp2t"
 # How long (seconds) to wait when there is a gap in the schedule before
 # re-checking whether a new entry has become available.
 _GAP_POLL_INTERVAL = 5
+
+# Valid hwaccel backends — kept in sync with app/api/channels.py VALID_HWACCEL.
+_VALID_HWACCEL = {"none", "vaapi", "qsv", "nvenc"}
+_DEFAULT_VAAPI_DEVICE = "/dev/dri/renderD128"
+
+# Target video bitrate for hardware encoders, which don't support libx264's
+# -crf quality-based mode — kept equal to the software path's -maxrate so
+# quality is roughly comparable across backends.
+_HWACCEL_BITRATE = "8000k"
+
+# nvenc's named presets (p1=fastest/lowest quality .. p7=slowest/highest
+# quality) don't share libx264's naming, unlike h264_qsv which accepts the
+# same preset names as libx264 directly.
+_NVENC_PRESET_MAP = {
+    "ultrafast": "p1",
+    "superfast": "p2",
+    "veryfast": "p3",
+    "faster": "p4",
+    "fast": "p5",
+    "medium": "p6",
+}
 
 
 def _get_client() -> JellyfinClient:
@@ -188,8 +210,27 @@ async def _detect_preferred_audio_index(source: str) -> Optional[int]:
 
 
 def _build_ffmpeg_cmd(
-    source: str, offset_seconds: int, audio_stream_index: Optional[int] = None
+    source: str,
+    offset_seconds: int,
+    audio_stream_index: Optional[int] = None,
+    max_height: Optional[int] = 1080,
+    preset: str = "veryfast",
+    hwaccel: str = "none",
+    hwaccel_device: Optional[str] = None,
 ) -> list:
+    """
+    Build the ffmpeg command for one schedule entry.
+
+    max_height: scale down to this height (keeping aspect ratio) if the
+        source is taller; None or 0 = pass the native resolution through.
+    preset: libx264 speed/quality preset. Also accepted as-is by h264_qsv
+        (which uses the same preset names); mapped to nvenc's p1-p7 scale
+        for "nvenc"; ignored entirely for "vaapi", which has no equivalent.
+    hwaccel: "none" (software libx264, default) | "vaapi" | "qsv" | "nvenc".
+        Falls back to "none" if given an unrecognized value.
+    hwaccel_device: optional explicit device (e.g. "/dev/dri/renderD128" for
+        vaapi) for machines with more than one GPU. Blank = auto-detect.
+    """
     # When any -map is present ffmpeg disables automatic stream selection, so
     # we must map both video and audio explicitly.  If ffprobe identified a
     # preferred-language track use its absolute index; otherwise fall back to
@@ -199,26 +240,73 @@ def _build_ffmpeg_cmd(
         if audio_stream_index is not None
         else ["-map", "0:a:0"]
     )
-    return [
-        "ffmpeg",
-        # ── Input / seek ─────────────────────────────────────────────────────
+
+    if hwaccel not in _VALID_HWACCEL:
+        logger.warning(f"_build_ffmpeg_cmd: unrecognized hwaccel {hwaccel!r}, using software")
+        hwaccel = "none"
+
+    scale_needed = bool(max_height and max_height > 0)
+    cmd = ["ffmpeg"]
+
+    # ── Hardware device init (must precede -i) ──────────────────────────────
+    if hwaccel == "vaapi":
+        cmd += ["-vaapi_device", hwaccel_device or _DEFAULT_VAAPI_DEVICE]
+    elif hwaccel == "qsv":
+        cmd += ["-init_hw_device", f"qsv=hw:{hwaccel_device or 'auto'}", "-filter_hw_device", "hw"]
+
+    # ── Input / seek ─────────────────────────────────────────────────────────
+    cmd += [
         "-ss", str(offset_seconds),    # fast seek in local file / HTTP Range
         "-probesize", "262144",        # 256 KB probe instead of default 5 MB
         "-analyzeduration", "1000000", # 1 s analysis instead of default 5 s
         "-fflags", "nobuffer",         # pass frames through without extra buffering
-        "-i", source,
-        # ── Stream mapping ────────────────────────────────────────────────────
-        "-map", "0:v:0",               # first video stream
-        *audio_map,                    # preferred language track or first audio
-        # ── Video — H.264 1080p ───────────────────────────────────────────────
-        "-vf", "scale=-2:min(1080\\,ih)",  # scale down to 1080p max, keep AR
-        "-c:v", "libx264",
-        "-preset", "veryfast",         # fast encode, lower CPU than slow/medium
-        "-tune", "zerolatency",        # minimize encoder buffering for live use
-        "-crf", "20",                  # visually lossless at typical bitrates
-        "-maxrate", "8000k",
-        "-bufsize", "4000k",
-        # ── Audio — AAC stereo ────────────────────────────────────────────────
+    ]
+
+    if hwaccel == "vaapi":
+        cmd += ["-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi"]
+    elif hwaccel == "qsv":
+        cmd += ["-hwaccel", "qsv", "-hwaccel_output_format", "qsv"]
+    elif hwaccel == "nvenc":
+        cmd += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+
+    cmd += ["-i", source, "-map", "0:v:0", *audio_map]
+
+    # ── Video filter — scale, keeping frames resident on the GPU when no
+    # scaling is needed at all (fastest path). When scaling IS needed under a
+    # hw decode path, round-trip through system memory: this is the most
+    # broadly-compatible approach across driver versions (the alternative,
+    # scale_vaapi/vpp_qsv, has expression-syntax support that varies by
+    # driver) — the frame is small, so this costs little CPU compared to the
+    # decode/encode work already offloaded to the GPU.
+    if scale_needed:
+        scale_expr = f"scale=-2:min({max_height}\\,ih)"
+        if hwaccel in ("vaapi", "qsv"):
+            vf = f"hwdownload,format=nv12,{scale_expr},format=nv12,hwupload"
+        elif hwaccel == "nvenc":
+            vf = f"hwdownload,format=nv12,{scale_expr},format=nv12,hwupload_cuda"
+        else:
+            vf = scale_expr
+        cmd += ["-vf", vf]
+
+    # ── Video codec ──────────────────────────────────────────────────────────
+    if hwaccel == "vaapi":
+        cmd += ["-c:v", "h264_vaapi", "-b:v", _HWACCEL_BITRATE]
+    elif hwaccel == "qsv":
+        cmd += ["-c:v", "h264_qsv", "-preset", preset, "-b:v", _HWACCEL_BITRATE]
+    elif hwaccel == "nvenc":
+        nvenc_preset = _NVENC_PRESET_MAP.get(preset, "p3")
+        cmd += ["-c:v", "h264_nvenc", "-preset", nvenc_preset, "-b:v", _HWACCEL_BITRATE]
+    else:
+        cmd += [
+            "-c:v", "libx264",
+            "-preset", preset,          # fast encode, lower CPU than slow/medium
+            "-tune", "zerolatency",     # minimize encoder buffering for live use
+            "-crf", "20",               # visually lossless at typical bitrates
+        ]
+    cmd += ["-maxrate", "8000k", "-bufsize", "4000k"]
+
+    # ── Audio — AAC stereo ────────────────────────────────────────────────
+    cmd += [
         "-c:a", "aac",
         "-b:a", "192k",
         "-ac", "2",                    # downmix to stereo
@@ -227,6 +315,7 @@ def _build_ffmpeg_cmd(
         "-loglevel", "warning",
         "pipe:1",
     ]
+    return cmd
 
 
 async def _resolve_source(entry: ScheduleEntry, channel_id: int) -> str:
@@ -251,8 +340,120 @@ async def _resolve_source(entry: ScheduleEntry, channel_id: int) -> str:
     return source
 
 
+async def _drain_stderr(process, tail: bytearray, max_tail: int = 4000) -> None:
+    """
+    Continuously read ffmpeg's stderr so the pipe never fills up and blocks
+    the process — nothing else reads it — keeping only the last max_tail
+    bytes around in case we need to log them on failure.
+    """
+    try:
+        while True:
+            chunk = await process.stderr.read(4096)
+            if not chunk:
+                break
+            tail.extend(chunk)
+            if len(tail) > max_tail:
+                del tail[: len(tail) - max_tail]
+    except Exception:
+        pass
+
+
+async def _play_entry(
+    entry: ScheduleEntry,
+    offset_seconds: int,
+    channel: Channel,
+    channel_id: int,
+    chunk_size: int,
+):
+    """
+    Resolve the entry's source and stream it through ffmpeg using the
+    channel's configured transcode settings (max_height / preset / hwaccel),
+    yielding MPEG-TS chunks.
+
+    If a hardware-accelerated encode fails immediately — detected as the
+    ffmpeg process exiting having produced zero bytes of output, almost
+    always a misconfigured driver/device rather than the source itself being
+    bad — this retries the same entry once in software (libx264) rather than
+    letting a bad hwaccel config silently skip content for the whole channel.
+    """
+    try:
+        source = await _resolve_source(entry, channel_id)
+    except Exception as exc:
+        logger.error(
+            f"_play_entry: could not resolve source for entry {entry.id} "
+            f"'{entry.title}': {exc}",
+            exc_info=True,
+        )
+        await asyncio.sleep(2)  # brief backoff in case Jellyfin is unreachable
+        return
+
+    audio_idx = await _detect_preferred_audio_index(source)
+    hwaccel = channel.hwaccel or "none"
+    attempted_fallback = False
+
+    while True:
+        cmd = _build_ffmpeg_cmd(
+            source, offset_seconds, audio_idx,
+            max_height=channel.transcode_max_height,
+            preset=channel.transcode_preset,
+            hwaccel=hwaccel,
+            hwaccel_device=channel.hwaccel_device,
+        )
+        logger.debug(
+            f"_play_entry: starting ffmpeg for '{entry.title}' (id={entry.id}), "
+            f"offset={offset_seconds}s, hwaccel={hwaccel}, "
+            f"audio_stream={audio_idx if audio_idx is not None else 'default'}"
+        )
+
+        try:
+            process = await asyncio.create_subprocess_exec(*cmd, stdout=PIPE, stderr=PIPE)
+        except FileNotFoundError:
+            logger.error("_play_entry: ffmpeg not found")
+            return  # Cannot recover — end the stream
+
+        stderr_tail = bytearray()
+        stderr_task = asyncio.create_task(_drain_stderr(process, stderr_tail))
+        bytes_yielded = 0
+        try:
+            while True:
+                chunk = await process.stdout.read(chunk_size)
+                if not chunk:
+                    break
+                bytes_yielded += len(chunk)
+                yield chunk
+        finally:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            await process.wait()
+            stderr_task.cancel()
+            try:
+                await stderr_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        if bytes_yielded > 0 or hwaccel == "none" or attempted_fallback:
+            logger.info(
+                f"_play_entry: channel={channel_id} '{entry.title}' finished "
+                f"(hwaccel={hwaccel}, bytes_yielded={bytes_yielded})"
+            )
+            return
+
+        # Hardware path produced nothing at all — almost certainly a driver
+        # or device misconfiguration, not the content actually ending.
+        # Retry once in software so this entry still plays.
+        attempted_fallback = True
+        logger.error(
+            f"_play_entry: hwaccel '{hwaccel}' produced no output for "
+            f"'{entry.title}' (channel={channel_id}), retrying in software. "
+            f"ffmpeg stderr tail: {bytes(stderr_tail)[-2000:]!r}"
+        )
+        hwaccel = "none"
+
+
 async def _continuous_stream_generator(
-    channel_id: int, db: AsyncSession, chunk_size: int = 65536
+    channel_id: int, channel: Channel, db: AsyncSession, chunk_size: int = 65536
 ):
     """
     Yield MPEG-TS chunks indefinitely, transitioning between schedule entries
@@ -318,54 +519,13 @@ async def _continuous_stream_generator(
             await asyncio.sleep(_GAP_POLL_INTERVAL)
             continue
 
-        try:
-            source = await _resolve_source(entry, channel_id)
-        except Exception as exc:
-            logger.error(
-                f"_continuous_stream_generator: could not resolve source for "
-                f"entry {entry.id} '{entry.title}': {exc}",
-                exc_info=True,
-            )
-            # Move on to the next entry in sequence rather than retrying this
-            # broken one — get_next_entry will skip past it next iteration.
-            previous_entry = entry
-            await asyncio.sleep(min(_GAP_POLL_INTERVAL, 30))
-            continue
-
-        audio_idx = await _detect_preferred_audio_index(source)
-        cmd = _build_ffmpeg_cmd(source, offset_seconds, audio_idx)
-        logger.debug(
-            f"_continuous_stream_generator: starting ffmpeg for "
-            f"'{entry.title}' (id={entry.id}), offset={offset_seconds}s, "
-            f"audio_stream={audio_idx if audio_idx is not None else 'default'}"
-        )
-
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd, stdout=PIPE, stderr=PIPE
-            )
-        except FileNotFoundError:
-            logger.error("_continuous_stream_generator: ffmpeg not found")
-            return  # Cannot recover — end the stream
-
-        try:
-            while True:
-                chunk = await process.stdout.read(chunk_size)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            try:
-                process.kill()
-            except ProcessLookupError:
-                pass
-            await process.wait()
-            logger.info(
-                f"_continuous_stream_generator: channel={channel_id} "
-                f"'{entry.title}' finished, advancing to next entry"
-            )
+        async for chunk in _play_entry(entry, offset_seconds, channel, channel_id, chunk_size):
+            yield chunk
 
         # Advance by playback order, not wall clock — see docstring above.
+        # This happens whether the entry played fully or _play_entry bailed
+        # out early (bad source, ffmpeg missing) — either way get_next_entry
+        # will move past it rather than retrying it forever.
         previous_entry = entry
 
         # Tiny pause to avoid a tight spin if ffmpeg exits instantly (bad source)
@@ -382,6 +542,12 @@ async def stream_channel(channel_id: int, db: AsyncSession) -> StreamingResponse
     """
     logger.info(f"stream_channel: channel_id={channel_id}")
 
+    channel_result = await db.execute(select(Channel).where(Channel.id == channel_id))
+    channel = channel_result.scalar_one_or_none()
+    if not channel:
+        logger.warning(f"stream_channel: channel {channel_id} not found")
+        raise HTTPException(status_code=404, detail="Channel not found")
+
     # Initial check — return 404 if nothing is playing so clients don't hang
     entry = await get_current_entry(channel_id, db)
     if not entry:
@@ -394,7 +560,7 @@ async def stream_channel(channel_id: int, db: AsyncSession) -> StreamingResponse
     offset_seconds = max(0, int((now - entry.start_time).total_seconds()))
 
     return StreamingResponse(
-        _continuous_stream_generator(channel_id, db),
+        _continuous_stream_generator(channel_id, channel, db),
         media_type=_MEDIA_TYPE,
         headers={
             "Cache-Control": "no-cache",

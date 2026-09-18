@@ -34,11 +34,14 @@ def setup_logging():
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
-    # Console handler
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(getattr(logging, settings.LOG_LEVEL.upper()))
-    console_handler.setFormatter(simple_formatter)
-    logger.addHandler(console_handler)
+    # Console handler — disable with LOG_TO_CONSOLE=false once running under
+    # a supervisor like systemd, whose journal already captures stdout, to
+    # avoid every line being duplicated into two places.
+    if settings.LOG_TO_CONSOLE:
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(getattr(logging, settings.LOG_LEVEL.upper()))
+        console_handler.setFormatter(simple_formatter)
+        logger.addHandler(console_handler)
 
     # File handler (if enabled)
     if settings.LOG_TO_FILE:

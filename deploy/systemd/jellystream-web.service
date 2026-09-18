@@ -1,0 +1,36 @@
+[Unit]
+Description=JellyStream PHP frontend (Lighttpd + FastCGI)
+After=network-online.target jellystream-api.service
+Wants=network-online.target
+# Soft dependency — the frontend already tolerates the API being briefly
+# unreachable (shows an "offline" banner and recovers), so this doesn't use
+# Requires=/BindsTo=, which would forcibly stop this unit if the API unit
+# stops or fails.
+Wants=jellystream-api.service
+
+[Service]
+Type=simple
+User=oarko
+Group=oarko
+WorkingDirectory=/home/oarko/jellystream
+# start-lighttpd.sh refuses to start if it finds a stale PID file from an
+# unclean shutdown (a guard meant for manual re-runs) — clear it before every
+# systemd-managed start so a crash never permanently blocks auto-restart.
+ExecStartPre=-/usr/bin/rm -f /tmp/jellystream-lighttpd.pid
+ExecStart=/home/oarko/jellystream/start-lighttpd.sh
+Restart=on-failure
+RestartSec=5
+
+# start-lighttpd.sh generates lighttpd.conf pointing its own error/access
+# logs at ./logs/lighttpd-{error,access}.log — lighttpd has no built-in size
+# rotation for those, so pair this with the provided logrotate config (see
+# deploy/logrotate/jellystream-web). Also send stdout/stderr to the journal
+# for `journalctl -u jellystream-web -f`.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=jellystream-web
+
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -9,26 +9,36 @@ $message_type = '';
 
 // Handle form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // `??` only falls back when a key is entirely missing, not when a field
+    // was submitted blank (an emptied <input type="number"> submits as ''
+    // — a defined, non-null value). A blank numeric field written straight
+    // to .env crashes the whole API on next startup — pydantic-settings
+    // hard-fails parsing '' as an int rather than using the coded default.
+    $post_or_default = function (string $key, string $default): string {
+        $val = $_POST[$key] ?? '';
+        return ($val === '') ? $default : $val;
+    };
+
     $config = [
-        'APP_NAME' => $_POST['app_name'] ?? 'JellyStream',
-        'DEBUG' => $_POST['debug'] ?? 'False',
-        'HOST' => $_POST['host'] ?? '0.0.0.0',
-        'PORT' => $_POST['api_port'] ?? '8000',
-        'DATABASE_URL' => $_POST['database_url'] ?? 'sqlite:///./data/database/jellystream.db',
-        'JELLYSTREAM_PUBLIC_URL' => $_POST['jellystream_public_url'] ?? '',
-        'JELLYFIN_URL' => $_POST['jellyfin_url'] ?? '',
-        'JELLYFIN_API_KEY' => $_POST['jellyfin_api_key'] ?? '',
-        'JELLYFIN_USER_ID' => $_POST['jellyfin_user_id'] ?? '',
-        'JELLYFIN_CLIENT_NAME' => $_POST['jellyfin_client_name'] ?? 'JellyStream',
-        'JELLYFIN_DEVICE_NAME' => $_POST['jellyfin_device_name'] ?? 'JellyStream Server',
-        'LOG_LEVEL' => $_POST['log_level'] ?? 'INFO',
-        'LOG_TO_FILE' => $_POST['log_to_file'] ?? 'True',
-        'LOG_RETENTION_DAYS' => $_POST['log_retention_days'] ?? '30',
+        'APP_NAME' => $post_or_default('app_name', 'JellyStream'),
+        'DEBUG' => $post_or_default('debug', 'False'),
+        'HOST' => $post_or_default('host', '0.0.0.0'),
+        'PORT' => $post_or_default('api_port', '8000'),
+        'DATABASE_URL' => $post_or_default('database_url', 'sqlite:///./data/database/jellystream.db'),
+        'JELLYSTREAM_PUBLIC_URL' => $post_or_default('jellystream_public_url', ''),
+        'JELLYFIN_URL' => $post_or_default('jellyfin_url', ''),
+        'JELLYFIN_API_KEY' => $post_or_default('jellyfin_api_key', ''),
+        'JELLYFIN_USER_ID' => $post_or_default('jellyfin_user_id', ''),
+        'JELLYFIN_CLIENT_NAME' => $post_or_default('jellyfin_client_name', 'JellyStream'),
+        'JELLYFIN_DEVICE_NAME' => $post_or_default('jellyfin_device_name', 'JellyStream Server'),
+        'LOG_LEVEL' => $post_or_default('log_level', 'INFO'),
+        'LOG_TO_FILE' => $post_or_default('log_to_file', 'True'),
+        'LOG_RETENTION_DAYS' => $post_or_default('log_retention_days', '30'),
     ];
 
     // Save port configuration separately
-    $php_port = $_POST['php_port'] ?? 8080;
-    $api_port = $_POST['api_port'] ?? 8000;
+    $php_port = $post_or_default('php_port', '8080');
+    $api_port = $post_or_default('api_port', '8000');
 
     $success = true;
 

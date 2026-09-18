@@ -1,6 +1,7 @@
 """Application configuration."""
 
-from typing import List
+from typing import Any, List
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -71,6 +72,23 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def _blank_env_vars_use_defaults(cls, data: Any) -> Any:
+        """
+        Treat an empty string from .env as "not set" rather than a literal
+        value, so the field's coded default applies instead of a hard crash
+        at startup (e.g. LOG_RETENTION_DAYS= with nothing after the "="
+        fails int parsing otherwise). A blank .env line is a config-editing
+        slip, not an intentional value — no field here needs to be
+        explicitly set to "" to mean something different from being absent;
+        the string fields that DO default to "" (JELLYFIN_USER_ID,
+        MEDIA_PATH_MAP, etc.) end up at that same default either way.
+        """
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if v != ""}
+        return data
 
 
 settings = Settings()

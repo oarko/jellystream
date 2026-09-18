@@ -371,21 +371,32 @@ Items with `item_type="Collection"` return `no_path` (no file to verify).
 
 ### Stream Proxy (`app/services/stream_proxy.py`)
 
-1. Finds current ScheduleEntry: `start_time <= now < end_time`
-2. Calculates `offset = now - start_time` in seconds
-3. Prefers `entry.file_path` (direct local file — near-instant seek); falls back to
-   `JellyfinClient.get_stream_url(media_item_id)` (Jellyfin HTTP stream)
-4. Launches ffmpeg:
-   ```
-   ffmpeg -ss {offset} -probesize 262144 -analyzeduration 1000000 -fflags nobuffer
-          -i {source}
-          -vf scale=-2:min(1080,ih) -c:v libx264 -preset veryfast -tune zerolatency
-          -crf 20 -maxrate 8000k -bufsize 4000k
-          -c:a aac -b:a 192k -ac 2
-          -f mpegts -loglevel warning pipe:1
-   ```
-5. Returns `StreamingResponse` (`video/mp2t`) wrapping ffmpeg stdout
-6. `X-Entry-Title` header is ASCII-encoded (non-ASCII chars replaced with `?`) to avoid
+**One shared pipeline per channel (`_ChannelHub`).** The first viewer starts it; further
+viewers attach to the same live MPEG-TS stream (no second ffmpeg) and join at its current
+position. It stops `_HUB_IDLE_GRACE` (15s) after the last viewer leaves, so brief
+reconnects (e.g. Jellyfin's HEAD/probe/GET) don't restart anything.
+
+1. First entry is picked by wall clock (`get_current_entry`, joins mid-show at the right
+   offset); every later entry follows playback order (`get_next_entry`) at offset 0 — never
+   re-derived from the clock (schedule lengths come from Jellyfin metadata and drift).
+   If nothing is scheduled after the last entry it polls (no wall-clock fallback: that can
+   only replay something).
+2. Each entry is a `_Segment` = one ffmpeg process writing TS-aligned (188-byte multiples)
+   chunks into a bounded queue. Prefers `entry.file_path`, else Jellyfin HTTP stream.
+3. **Gapless boundary:** ~12s before the current entry ends the next is looked up/probed;
+   ~3s before, its ffmpeg is launched and its first output waits in its queue.
+4. **Continuous timeline:** every segment after the first gets `-output_ts_offset` = end of
+   the previous one, so MPEG-TS timestamps never step backwards (ffmpeg-based clients,
+   incl. Jellyfin Live TV, fail on a reset to ~0 at each item boundary).
+5. Per-segment fallback: (a) software decode + hardware encode (hardware DECODE is never
+   used — a GPU can decode into silently corrupted frames with a clean exit code),
+   then (b) full libx264. A tier counts as failed on zero output OR a non-zero exit code.
+6. Viewers get a bounded queue each; one that can't keep up is disconnected (dropping
+   chunks would break packet alignment). Keyframes are forced every 2s so a late joiner
+   waits ≤2s to start decoding.
+7. Every DB lookup uses its own short-lived session (never the request's, never held during
+   ffmpeg) — also means channel transcode settings are re-read fresh for every entry.
+8. `X-Entry-Title` header is ASCII-encoded (non-ASCII chars replaced with `?`) to avoid
    latin-1 encoding errors in Starlette headers
 
 ### Background Scheduler (`app/services/scheduler.py`)
@@ -654,14 +665,20 @@ It never relies on `getElementById` for elements that were children of the conta
 inline (`container.innerHTML = '<div class="cart-empty">...'`) rather than toggled.
 
 ### ffmpeg Stream Proxy
+Built by `_build_ffmpeg_cmd` (software path shown; VAAPI/QSV/NVENC swap the codec and add
+`hwupload`, decode stays in software):
 ```
-ffmpeg -ss {offset} -probesize 262144 -analyzeduration 1000000 -fflags nobuffer
-       -i {source}
-       -vf scale=-2:min(1080,ih) -c:v libx264 -preset veryfast -tune zerolatency
-       -crf 20 -maxrate 8000k -bufsize 4000k
+ffmpeg -ss {offset} -re -probesize 262144 -analyzeduration 1000000 -fflags nobuffer
+       -i {source} -map 0:v:0 -map 0:a:0
+       -vf scale=-2:min({max_height},ih) -c:v libx264 -preset {preset} -tune zerolatency
+       -crf 20 -force_key_frames expr:gte(t,n_forced*2) -maxrate 8000k -bufsize 4000k
        -c:a aac -b:a 192k -ac 2
-       -f mpegts pipe:1
+       [-output_ts_offset {seconds}] -f mpegts -loglevel warning pipe:1
 ```
+`-re` is essential: without it ffmpeg encodes as fast as the hardware allows and only
+TCP backpressure slows it, so a client that buffers ahead lets a whole movie finish in
+minutes and the schedule "jumps ahead". Transcode settings (max_height/preset/hwaccel)
+are per-channel columns on `Channel`.
 
 ### HTTP Header Encoding
 Starlette encodes response headers as latin-1. Titles with non-ASCII characters

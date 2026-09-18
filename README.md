@@ -235,7 +235,7 @@ Interactive Swagger docs are available at `http://localhost:8000/docs` when the 
 
 ## Discord Server
 
-https://discord.gg/YmhGFnrv
+[https://discord.gg/YmhGFnrv](https://discord.gg/3E6EeCspxY)
 
 ## License
 

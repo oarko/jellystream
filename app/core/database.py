@@ -73,6 +73,12 @@ async def init_db():
         "ALTER TABLE channels ADD COLUMN transcode_preset VARCHAR(20) DEFAULT 'veryfast'",
         "ALTER TABLE channels ADD COLUMN hwaccel VARCHAR(20) DEFAULT 'none'",
         "ALTER TABLE channels ADD COLUMN hwaccel_device VARCHAR(255)",
+        "ALTER TABLE channels ADD COLUMN bug_image_path VARCHAR(500)",
+        "ALTER TABLE channels ADD COLUMN bug_enabled BOOLEAN DEFAULT 0",
+        "ALTER TABLE channels ADD COLUMN bug_position VARCHAR(20) DEFAULT 'bottom-right'",
+        "ALTER TABLE channels ADD COLUMN bug_interval_seconds INTEGER DEFAULT 0",
+        "ALTER TABLE channels ADD COLUMN bug_duration_seconds INTEGER DEFAULT 10",
+        "ALTER TABLE channels ADD COLUMN bug_scale_percent INTEGER DEFAULT 12",
     ]
     for stmt in _migrations:
         try:

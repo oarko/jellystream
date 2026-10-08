@@ -372,6 +372,106 @@ configure_permissions() {
     print_warning "If your media library lives outside this project directory (the usual case), make sure '$SERVICE_USER' can read it too — e.g. by adding it to whatever group owns those files. JellyStream can't automate that part since it doesn't know your media layout."
 }
 
+# ── systemd service install ──────────────────────────────────────────────
+
+# Set to 1 by install_systemd_services() if it actually installed/started
+# the units, so main() can tailor its closing instructions accordingly.
+SYSTEMD_INSTALLED=0
+
+# Render one deploy/systemd/<name>.service template for THIS install: swap
+# the hardcoded /home/oarko/jellystream path for the real project directory
+# and the hardcoded jellystream user/group for whoever will actually run it.
+_render_service_file() {
+    local name="$1" project_dir="$2" run_user="$3" run_group="$4" out_dir="$5"
+    sed \
+        -e "s#/home/oarko/jellystream#${project_dir}#g" \
+        -e "s/^User=.*/User=${run_user}/" \
+        -e "s/^Group=.*/Group=${run_group}/" \
+        "deploy/systemd/${name}.service" > "${out_dir}/${name}.service"
+}
+
+# Offer to install both units, enable them, and start them right now —
+# the recommended path for anything other than a quick local test, since it
+# gets auto-restart-on-crash and start-on-boot with no further steps.
+install_systemd_services() {
+    echo ""
+    print_info "JellyStream can run as a systemd service: starts on boot, restarts itself if it crashes."
+    read -p "Install and start JellyStream as a systemd service now? (Y/n): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Nn]$ ]]; then
+        print_info "Skipping — you can run it directly from the command line instead:"
+        echo "    ${YELLOW}./start.sh${NC}            (API backend)"
+        echo "    ${YELLOW}./start-php.sh${NC}        (PHP frontend, dev server)"
+        echo "    ${YELLOW}./start-lighttpd.sh${NC}   (PHP frontend, production)"
+        print_info "You can install the service later by re-running ./setup.sh, or manually — see deploy/README.md."
+        return 0
+    fi
+
+    if ! command -v systemctl &>/dev/null; then
+        print_warning "systemctl not found — this system doesn't appear to use systemd. Skipping."
+        print_info "Start JellyStream manually with ./start.sh and ./start-php.sh or ./start-lighttpd.sh."
+        return 0
+    fi
+
+    # The web unit needs lighttpd + php-cgi. check_system_requirements()
+    # already offered to install these earlier and may have been declined —
+    # since installing the service was just explicitly requested, install
+    # them now without asking a second time.
+    if ! command -v lighttpd &>/dev/null; then
+        print_info "Installing lighttpd + PHP-CGI (required by the web service)..."
+        sudo apt update
+        sudo apt install -y lighttpd php-cgi php-sqlite3 php-curl php-json
+        print_success "lighttpd installed."
+    fi
+
+    local run_user run_group
+    if id "$SERVICE_USER" &>/dev/null; then
+        run_user="$SERVICE_USER"
+        run_group="$SERVICE_USER"
+    else
+        run_user="$(whoami)"
+        run_group="$(id -gn)"
+        print_warning "Service user '$SERVICE_USER' wasn't created — the service will run as '$run_user' instead."
+    fi
+
+    local project_dir
+    project_dir="$(pwd)"
+
+    print_info "Generating service files (path: $project_dir, user: $run_user)..."
+    local tmp_dir
+    tmp_dir="$(mktemp -d)"
+    _render_service_file "jellystream-api" "$project_dir" "$run_user" "$run_group" "$tmp_dir"
+    _render_service_file "jellystream-web" "$project_dir" "$run_user" "$run_group" "$tmp_dir"
+
+    sudo cp "${tmp_dir}/jellystream-api.service" /etc/systemd/system/jellystream-api.service
+    sudo cp "${tmp_dir}/jellystream-web.service" /etc/systemd/system/jellystream-web.service
+    rm -rf "$tmp_dir"
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now jellystream-api.service
+    sudo systemctl enable --now jellystream-web.service
+
+    print_info "Waiting for the API to come up..."
+    local ok=0
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -fsS "http://localhost:${PORT:-8000}/health" &>/dev/null; then
+            ok=1
+            break
+        fi
+        sleep 1
+    done
+
+    if [ "$ok" = "1" ]; then
+        print_success "Services installed, started, and responding!"
+    else
+        print_warning "Services were installed and started, but the health check didn't respond yet."
+        print_info "Check status: ${YELLOW}systemctl status jellystream-api jellystream-web${NC}"
+        print_info "Check logs:   ${YELLOW}journalctl -u jellystream-api -n 50${NC}"
+    fi
+
+    SYSTEMD_INSTALLED=1
+}
+
 # Main setup process
 main() {
     # Change to script directory
@@ -386,6 +486,7 @@ main() {
     create_directories
     create_service_user
     configure_permissions
+    install_systemd_services
 
     echo ""
     echo -e "${GREEN}╔═══════════════════════════════════════════╗${NC}"
@@ -394,25 +495,31 @@ main() {
     echo ""
     print_info "Next steps:"
     echo "  1. Review .env if you want to tweak anything further"
-    echo "  2. Run as a systemd service (recommended — see deploy/README.md):"
-    echo "     ${YELLOW}sudo cp deploy/systemd/*.service /etc/systemd/system/${NC}"
-    echo "     ${YELLOW}sudo systemctl daemon-reload${NC}"
-    echo "     ${YELLOW}sudo systemctl enable --now jellystream-api jellystream-web${NC}"
-    echo "     (those units already default to User=$SERVICE_USER)"
-    echo "  3. Open the web UI at: ${YELLOW}http://localhost:8080${NC}"
-    echo "  4. Create channels, build collections, and register with Jellyfin Live TV"
+    if [ "$SYSTEMD_INSTALLED" = "1" ]; then
+        echo "  2. Open the web UI at: ${YELLOW}http://localhost:8080${NC}"
+        echo "  3. Create channels, build collections, and register with Jellyfin Live TV"
+        echo "  4. To update later: ${YELLOW}./update.sh${NC} (pulls main/nightly from GitHub, restarts the services)"
+    else
+        echo "  2. Start JellyStream manually:"
+        echo "     ${YELLOW}./start.sh${NC}            (API backend)"
+        echo "     ${YELLOW}./start-php.sh${NC}        (PHP frontend, dev) or ${YELLOW}./start-lighttpd.sh${NC} (production)"
+        echo "  3. Open the web UI at: ${YELLOW}http://localhost:8080${NC}"
+        echo "  4. Create channels, build collections, and register with Jellyfin Live TV"
+        echo "  5. To update later: ${YELLOW}./update.sh${NC} (pulls main/nightly from GitHub)"
+        echo "     Or install the systemd service any time by re-running ${YELLOW}./setup.sh${NC}."
+    fi
     echo ""
 
-    # Offer a quick foreground test as the CURRENT user — separate from the
-    # systemd service, which runs as $SERVICE_USER (see step 2 above).
-    read -p "Start JellyStream now for a quick test, as the current user? (y/N): " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        print_info "Starting JellyStream..."
-        echo ""
-        $PYTHON_CMD run.py
-    else
-        print_info "You can start it later with: ${YELLOW}./start.sh${NC} (quick test) or the systemd service (step 2 above)."
+    if [ "$SYSTEMD_INSTALLED" != "1" ]; then
+        read -p "Start JellyStream now for a quick test, as the current user? (y/N): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            print_info "Starting JellyStream..."
+            echo ""
+            $PYTHON_CMD run.py
+        else
+            print_info "You can start it later with: ${YELLOW}./start.sh${NC}"
+        fi
     fi
 }
 

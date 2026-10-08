@@ -314,4 +314,16 @@ class ApiClient {
     public function importBoxset($boxset_id) {
         return $this->post("/collections/import/{$boxset_id}");
     }
+
+    public function getSystemVersion() {
+        return $this->get('/system/version');
+    }
+
+    public function checkForUpdates($channel = null) {
+        return $this->get('/system/update-check', $channel ? ['channel' => $channel] : []);
+    }
+
+    public function setUpdateChannel($channel) {
+        return $this->put('/system/update-channel', ['channel' => $channel]);
+    }
 }

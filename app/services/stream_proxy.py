@@ -59,6 +59,17 @@ _NVENC_PRESET_MAP = {
     "medium": "p6",
 }
 
+# On-screen graphic ("bug") corner positions — kept in sync with
+# app/api/channels.py VALID_BUG_POSITIONS. overlay filter variables:
+# main_w/main_h = base video frame; overlay_w/overlay_h = the bug image frame.
+_BUG_POSITION_EXPR = {
+    "top-left": "x=10:y=10",
+    "top-right": "x=main_w-overlay_w-10:y=10",
+    "bottom-left": "x=10:y=main_h-overlay_h-10",
+    "bottom-right": "x=main_w-overlay_w-10:y=main_h-overlay_h-10",
+    "center": "x=(main_w-overlay_w)/2:y=(main_h-overlay_h)/2",
+}
+
 
 def _get_client() -> JellyfinClient:
     return JellyfinClient(
@@ -220,6 +231,11 @@ def _build_ffmpeg_cmd(
     hwaccel_device: Optional[str] = None,
     hw_decode: bool = True,
     output_ts_offset: float = 0.0,
+    bug_image_path: Optional[str] = None,
+    bug_position: str = "bottom-right",
+    bug_interval_seconds: int = 0,
+    bug_duration_seconds: int = 10,
+    bug_scale_percent: int = 12,
 ) -> list:
     """
     Build the ffmpeg command for one schedule entry.
@@ -265,6 +281,19 @@ def _build_ffmpeg_cmd(
         decode always produces regardless of the source format. _Segment
         always uses hw_decode=False for this reason (a GPU can also decode a
         file into silently corrupted frames, which can't be detected).
+    bug_image_path: optional path to a still image (e.g. a channel logo)
+        composited onto the video as a corner "bug". None, or a path that
+        doesn't exist on disk, leaves the command byte-for-byte identical to
+        not passing this argument at all — the no-bug case is the common
+        one and must never be put at risk by this feature.
+    bug_position: one of _BUG_POSITION_EXPR's keys; falls back to
+        "bottom-right" if unrecognized.
+    bug_interval_seconds: how often the bug appears, in seconds. 0 (default)
+        means always visible for the whole entry once bug_image_path is set.
+    bug_duration_seconds: how long each appearance lasts, when
+        bug_interval_seconds > 0.
+    bug_scale_percent: the bug's width as a percentage of the video's width
+        (height follows automatically, keeping the image's own aspect ratio).
     """
     # When any -map is present ffmpeg disables automatic stream selection, so
     # we must map both video and audio explicitly.  If ffprobe identified a
@@ -309,36 +338,97 @@ def _build_ffmpeg_cmd(
     elif hw_decode and hwaccel == "nvenc":
         cmd += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
 
-    cmd += ["-i", source, "-map", "0:v:0", *audio_map]
+    cmd += ["-i", source]
+
+    bug_active = bool(bug_image_path and os.path.isfile(bug_image_path))
+    if bug_active and bug_position not in _BUG_POSITION_EXPR:
+        logger.warning(f"_build_ffmpeg_cmd: unrecognized bug_position {bug_position!r}, using bottom-right")
+        bug_position = "bottom-right"
+    if bug_active:
+        # A still image has no framerate of its own; -loop 1 keeps re-sending
+        # the same frame so the overlay filter always has one to composite,
+        # for as long as the main video runs. No -ss/-re — it isn't a seekable
+        # timeline, just a single looping source frame.
+        cmd += ["-loop", "1", "-i", bug_image_path]
 
     # ── Video filter — get frames onto the GPU for encoding (when hwaccel is
-    # set) and/or scale, in whichever combination the decode path requires.
+    # set) and/or scale, in whichever combination the decode path requires,
+    # plus (when active) compositing the bug image on top. pre_parts runs
+    # before the bug is composited (e.g. resolution scaling); post_parts runs
+    # after (getting hw-path frames back onto the GPU for encoding) — the bug
+    # itself always lands on ordinary system-memory frames, between the two,
+    # since overlay doesn't operate on GPU surfaces directly.
     upload_filter = {"vaapi": "hwupload", "qsv": "hwupload", "nvenc": "hwupload_cuda"}.get(hwaccel)
     scale_expr = f"scale=-2:min({max_height}\\,ih)" if scale_needed else None
-    vf_parts: list = []
+    # Bug compositing needs system-memory frames even when scaling alone
+    # wouldn't have required the hwdownload/hwupload round-trip.
+    need_sw_frames = bool(scale_expr or bug_active)
+    pre_parts: list = []
+    post_parts: list = []
 
     if hwaccel == "none":
         if scale_expr:
-            vf_parts = [scale_expr]
+            pre_parts = [scale_expr]
     elif hw_decode:
         # Frames are already GPU-resident from decode. Only round-trip
-        # through system memory if a scale is actually needed — this is the
-        # most broadly-compatible way to scale (the alternative, scale_vaapi/
-        # vpp_qsv, has expression-syntax support that varies by driver) — the
-        # frame is small, so this costs little CPU next to the decode/encode
-        # work already offloaded to the GPU. If no scaling is needed, skip
-        # filtering entirely and stay fully GPU-resident end to end.
-        if scale_expr:
-            vf_parts = ["hwdownload", "format=nv12", scale_expr, "format=nv12", upload_filter]
+        # through system memory if something needs it (scaling and/or the
+        # bug) — this is the most broadly-compatible way to scale (the
+        # alternative, scale_vaapi/vpp_qsv, has expression-syntax support
+        # that varies by driver) — the frame is small, so this costs little
+        # CPU next to the decode/encode work already offloaded to the GPU.
+        # If nothing needs system-memory frames, skip filtering entirely and
+        # stay fully GPU-resident end to end.
+        if need_sw_frames:
+            pre_parts = ["hwdownload", "format=nv12"]
+            if scale_expr:
+                pre_parts.append(scale_expr)
+            post_parts = ["format=nv12", upload_filter]
     else:
         # Software decode (hw_decode=False): frames start in system memory,
-        # so just scale (if needed) then upload once for the encoder.
+        # so just scale (if needed) then upload once for the encoder — the
+        # bug, if active, composites directly onto these same frames with no
+        # extra round-trip needed.
         if scale_expr:
-            vf_parts.append(scale_expr)
-        vf_parts += ["format=nv12", upload_filter]
+            pre_parts.append(scale_expr)
+        post_parts = ["format=nv12", upload_filter]
 
-    if vf_parts:
-        cmd += ["-vf", ",".join(vf_parts)]
+    if not bug_active:
+        vf_parts = pre_parts + post_parts
+        if vf_parts:
+            cmd += ["-vf", ",".join(vf_parts)]
+        cmd += ["-map", "0:v:0", *audio_map]
+    else:
+        scale_pct = max(1, min(100, bug_scale_percent)) / 100.0
+        enable_clause = ""
+        if bug_interval_seconds and bug_interval_seconds > 0:
+            enable_clause = f":enable='lt(mod(t\\,{bug_interval_seconds}),{bug_duration_seconds})'"
+        position_expr = _BUG_POSITION_EXPR[bug_position]
+
+        base_pad = "[0:v]"
+        fc_parts = []
+        if pre_parts:
+            fc_parts.append(f"[0:v]{','.join(pre_parts)}[base]")
+            base_pad = "[base]"
+        # scale2ref: scale input [1:v] (the bug) to scale_pct of the
+        # reference's ([base_pad]) width, keeping the bug's own aspect ratio
+        # — [wm] is the scaled bug, [basev] is the reference passed through
+        # unchanged. Confirmed empirically: this is the standard ffmpeg idiom
+        # for sizing a watermark relative to the main video, not just a
+        # fixed pixel size that would look wrong across different sources.
+        fc_parts.append(f"[1:v]{base_pad}scale2ref=w=iw*{scale_pct}:h=ow/mdar[wm][basev]")
+        fc_parts.append(f"[basev][wm]overlay={position_expr}{enable_clause}[vout]")
+        final_label = "[vout]"
+        if post_parts:
+            fc_parts.append(f"[vout]{','.join(post_parts)}[vfinal]")
+            final_label = "[vfinal]"
+
+        cmd += ["-filter_complex", ";".join(fc_parts)]
+        cmd += ["-map", final_label, *audio_map]
+        # -loop 1 on the bug image means that input never reaches EOF on its
+        # own, so without -shortest ffmpeg would wait on it indefinitely
+        # instead of stopping when the actual video/audio ends (confirmed:
+        # omitting this hangs well past the real content's duration).
+        cmd += ["-shortest"]
 
     # ── Video codec ──────────────────────────────────────────────────────────
     if hwaccel == "vaapi":
@@ -474,13 +564,24 @@ class _ChannelGone(Exception):
 class _TranscodeSettings:
     """Plain snapshot of a channel's transcode settings (no ORM object)."""
 
-    __slots__ = ("max_height", "preset", "hwaccel", "hwaccel_device")
+    __slots__ = (
+        "max_height", "preset", "hwaccel", "hwaccel_device",
+        "bug_image_path", "bug_position", "bug_interval_seconds",
+        "bug_duration_seconds", "bug_scale_percent",
+    )
 
     def __init__(self, channel: Channel):
         self.max_height = channel.transcode_max_height
         self.preset = channel.transcode_preset or "veryfast"
         self.hwaccel = channel.hwaccel or "none"
         self.hwaccel_device = channel.hwaccel_device
+        # A bad/missing file on disk is handled by _build_ffmpeg_cmd itself
+        # (falls back to no overlay), so only bug_enabled is gated here.
+        self.bug_image_path = channel.bug_image_path if channel.bug_enabled else None
+        self.bug_position = channel.bug_position or "bottom-right"
+        self.bug_interval_seconds = channel.bug_interval_seconds or 0
+        self.bug_duration_seconds = channel.bug_duration_seconds or 10
+        self.bug_scale_percent = channel.bug_scale_percent or 12
 
 
 class _Segment:
@@ -566,6 +667,11 @@ class _Segment:
                 hwaccel_device=s.hwaccel_device,
                 hw_decode=hw_decode,
                 output_ts_offset=self.ts_offset,
+                bug_image_path=s.bug_image_path,
+                bug_position=s.bug_position,
+                bug_interval_seconds=s.bug_interval_seconds,
+                bug_duration_seconds=s.bug_duration_seconds,
+                bug_scale_percent=s.bug_scale_percent,
             )
             logger.debug(
                 f"_Segment: starting ffmpeg for '{self.entry.title}' (id={self.entry.id}), "

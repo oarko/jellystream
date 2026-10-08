@@ -60,6 +60,7 @@ jellystream/
 │   │   ├── schedules.py       # Schedule management
 │   │   ├── jellyfin.py        # Jellyfin integration endpoints (browse, image proxy, etc.)
 │   │   ├── livetv.py          # M3U/XMLTV generation + stream proxy route
+│   │   ├── system.py          # Version info + read-only GitHub update check
 │   │   └── schemas.py         # Pydantic request/response models
 │   ├── core/             # Core functionality
 │   │   ├── config.py          # Configuration management
@@ -88,7 +89,8 @@ jellystream/
 │   │   │   │   ├── channels.php         # Channel management list
 │   │   │   │   ├── channel_edit.php     # Channel editor (libraries, genres, schedule, Live TV)
 │   │   │   │   ├── collections.php      # Collection list + import boxset modal
-│   │   │   │   └── collection_edit.php  # Browse + cart + save (with series drill-down)
+│   │   │   │   ├── collection_edit.php  # Browse + cart + save (with series drill-down)
+│   │   │   │   └── system.php           # Version info + update-channel picker + check-for-updates
 │   │   │   ├── config/
 │   │   │   │   ├── config.php    # Constants (API_BASE_URL, APP_NAME etc)
 │   │   │   │   └── ports.php     # Port config + getApiBaseUrl() + getClientApiBaseUrl()
@@ -106,7 +108,8 @@ jellystream/
 ├── docs/
 │   └── API.md            # API documentation
 ├── tests/
-├── setup.sh              # Automated setup script
+├── setup.sh              # Automated setup script (installs as a systemd service by default)
+├── update.sh             # Pulls main/nightly from GitHub, reinstalls deps, restarts services
 ├── start.sh              # Quick start script
 ├── start-php.sh          # PHP built-in dev server (binds 0.0.0.0)
 ├── start-lighttpd.sh     # Lighttpd production server (binds 0.0.0.0)
@@ -126,6 +129,16 @@ jellystream/
 - tuner_host_id: String(255) nullable
 - listing_provider_id: String(255) nullable
 - schedule_generated_through: DateTime nullable
+- transcode_max_height: Integer nullable default=1080  # NULL/0 = no downscale
+- transcode_preset: String(20) default="veryfast"
+- hwaccel: String(20) default="none"  # "none" | "vaapi" | "qsv" | "nvenc"
+- hwaccel_device: String(255) nullable  # e.g. "/dev/dri/renderD128"
+- bug_image_path: String(500) nullable  # uploaded on-screen graphic image
+- bug_enabled: Boolean default=False
+- bug_position: String(20) default="bottom-right"  # top-left|top-right|bottom-left|bottom-right|center
+- bug_interval_seconds: Integer default=0  # 0 = always visible
+- bug_duration_seconds: Integer default=10
+- bug_scale_percent: Integer default=12  # width as % of video width
 - created_at, updated_at: DateTime server_default
 ```
 
@@ -223,6 +236,10 @@ See [docs/API.md](docs/API.md) for comprehensive documentation.
 - `POST /api/channels/{id}/generate-schedule?days=7&reset=true` — Regenerate schedule
 - `POST /api/channels/{id}/register-livetv` — Register global M3U+XMLTV with Jellyfin
 - `POST /api/channels/{id}/unregister-livetv` — Remove Jellyfin registration
+- `GET /api/channels/{id}/bug-image` — Serve the uploaded on-screen graphic image (for UI preview)
+- `POST /api/channels/{id}/bug-image` — Upload/replace the on-screen graphic image (multipart `file`; ≤5MB,
+  png/jpg/jpeg/gif/webp/bmp; rejected with 400 unless ffprobe confirms it decodes with real width/height)
+- `DELETE /api/channels/{id}/bug-image` — Remove the on-screen graphic image
 
 ### Schedules (`app/api/schedules.py`)
 - `GET /api/schedules/channel/{channel_id}` — Get schedule (default: -3h to +7d)
@@ -264,6 +281,15 @@ See [docs/API.md](docs/API.md) for comprehensive documentation.
 - `HEAD /api/livetv/stream/{channel_id}` — Probe endpoint (Jellyfin uses before GET)
 - `GET /api/livetv/stream/{channel_id}` — ffmpeg proxy stream at current offset
 
+### System / Updates (`app/api/system.py`)
+All read-only except the channel-preference write — see "Self-Update" under Current Status for why
+applying an update is never exposed here.
+- `GET /api/system/version` — current git branch/commit/commit_date/dirty + the configured `channel`
+- `GET /api/system/update-check?channel=main|nightly` — compares local HEAD against that branch's tip
+  on GitHub (via the public REST API — no local git fetch); omit `channel` to use the saved one
+- `PUT /api/system/update-channel` — body `{"channel": "main"|"nightly"}`; persists to `.env`
+  (`UPDATE_CHANNEL`) and takes effect immediately for this process (no restart needed to read it back)
+
 ## Pydantic Schemas (`app/api/schemas.py`)
 
 ```python
@@ -277,20 +303,37 @@ class GenreFilterConfig(BaseModel):
     content_type: str = "both"
     filter_type: str = "include"  # "include" | "exclude"
 
+class CollectionSourceConfig(BaseModel):
+    collection_id: int
+    collection_name: str
+
 class CreateChannelRequest(BaseModel):
     name: str
     description: Optional[str] = None
     channel_number: Optional[str] = None
     channel_type: str = "video"
     schedule_type: str = "genre_auto"
-    libraries: List[LibraryConfig]
+    libraries: List[LibraryConfig] = []
     genre_filters: Optional[List[GenreFilterConfig]] = None
+    collection_sources: Optional[List[CollectionSourceConfig]] = None
+    transcode_max_height: Optional[int] = 1080
+    transcode_preset: str = "veryfast"
+    hwaccel: str = "none"
+    hwaccel_device: Optional[str] = None
+    # On-screen graphic ("bug") — the image itself is uploaded separately
+    # via POST /api/channels/{id}/bug-image, so there's no path field here.
+    bug_enabled: bool = False
+    bug_position: str = "bottom-right"
+    bug_interval_seconds: int = 0       # 0 = always visible
+    bug_duration_seconds: int = 10
+    bug_scale_percent: int = 12
 
 class UpdateChannelRequest(BaseModel):
-    # all fields optional
+    # all fields optional — omit to leave unchanged
     name, description, channel_number, enabled, channel_type, schedule_type
-    libraries: Optional[List[LibraryConfig]] = None
-    genre_filters: Optional[List[GenreFilterConfig]] = None
+    libraries, genre_filters, collection_sources: Optional[...] = None
+    transcode_max_height, transcode_preset, hwaccel, hwaccel_device: Optional[...] = None
+    bug_enabled, bug_position, bug_interval_seconds, bug_duration_seconds, bug_scale_percent: Optional[...] = None
 
 class CreateScheduleEntryRequest(BaseModel):
     channel_id: int
@@ -396,9 +439,14 @@ reconnects (e.g. Jellyfin's HEAD/probe/GET) don't restart anything.
    chunks would break packet alignment). Keyframes are forced every 2s so a late joiner
    waits ≤2s to start decoding.
 7. Every DB lookup uses its own short-lived session (never the request's, never held during
-   ffmpeg) — also means channel transcode settings are re-read fresh for every entry.
+   ffmpeg) — also means channel transcode settings (and bug/overlay settings) are re-read
+   fresh for every entry.
 8. `X-Entry-Title` header is ASCII-encoded (non-ASCII chars replaced with `?`) to avoid
    latin-1 encoding errors in Starlette headers
+9. When the channel has an on-screen graphic configured (`bug_enabled` + a valid
+   `bug_image_path`), `_build_ffmpeg_cmd()` adds a `scale2ref`+`overlay` `-filter_complex`
+   instead of the plain `-vf` chain — see "On-Screen Graphic / Channel Bug" under Current
+   Status for the filter graph and the `-shortest` gotcha with looping image inputs.
 
 ### Background Scheduler (`app/services/scheduler.py`)
 
@@ -509,6 +557,10 @@ LOG_RETENTION_DAYS=30
 COMMERCIALS_PATH=./data/commercials
 LOGOS_PATH=./data/logos
 SCHEDULER_ENABLED=true
+
+# Which branch the web UI's "check for updates" compares against and
+# ./update.sh pulls from by default. "main" (stable) | "nightly" (latest).
+UPDATE_CHANNEL=main
 ```
 
 ## PHP Frontend (`app/web/php/`)
@@ -617,11 +669,59 @@ on elements it may have already destroyed).
 - Fill loop has consecutive_skips guard to prevent infinite loop on all-no-duration pools
 - Regenerate Schedule button uses `${API_BASE}` (client-side URL) not `<?php echo API_BASE_URL; ?>` (localhost)
 
+### ✅ Phase 2.5 — On-Screen Graphic / Channel Bug (complete)
+- `Channel` gains `bug_image_path`, `bug_enabled`, `bug_position`, `bug_interval_seconds`,
+  `bug_duration_seconds`, `bug_scale_percent` columns (safe `ALTER TABLE` migrations)
+- `POST`/`GET`/`DELETE /api/channels/{id}/bug-image` — upload (multipart, ≤5MB,
+  png/jpg/jpeg/gif/webp/bmp), preview, and remove the overlay image. Upload is rejected
+  with 400 unless `ffprobe` confirms the file decodes with real (non-zero) width/height —
+  a corrupt file can still be demuxed by its extension and exit 0 with `width=0,height=0`,
+  which a bare `returncode == 0` check would wrongly accept
+- `_build_ffmpeg_cmd()` (`stream_proxy.py`) builds a `scale2ref`+`overlay` `-filter_complex`
+  graph when a bug is active, instead of the plain `-vf` chain used otherwise:
+  `[1:v][base]scale2ref=w=iw*{pct}%:h=ow/mdar[wm][basev];[basev][wm]overlay={corner expr}{enable}[vout]`,
+  with an optional `format=nv12,hwupload[vfinal]` tail for hw-encode paths
+- The bug image is loaded with `-loop 1`; because a looping image input never reaches EOF,
+  `-shortest` is mandatory whenever the bug is active — omitting it hangs ffmpeg indefinitely
+  past the source's actual length
+- Periodic flashing uses `enable='lt(mod(t\,{interval}),{duration})'` on the overlay filter;
+  `interval=0` means always-on (no `enable` clause at all)
+- A missing/unreadable image file on disk falls back completely to the no-overlay code path
+  (no `-loop`, no `-filter_complex`) — a bad path can never break playback
+- `_TranscodeSettings` reads the bug fields fresh per schedule entry (same as hwaccel/preset),
+  gated on `bug_enabled` — toggling it takes effect on the next segment, not just at hub startup
+- PHP "On-Screen Graphic" section in `channel_edit.php`: enable toggle, corner picker,
+  size/interval/duration fields, and an upload/preview/remove control (plain `fetch` +
+  `FormData`, no library) wired to the three endpoints above
+
+### ✅ Phase 2.6 — GitHub Self-Update + Service-First Setup (complete)
+- `./update.sh` pulls from `https://github.com/oarko/jellystream` on a selectable channel
+  (`main` = stable, `nightly` = latest, saved as `UPDATE_CHANNEL` in `.env`): `git fetch` then
+  `git merge --ff-only` (never force-resets — a diverged branch aborts with instructions instead
+  of discarding anything), reinstalls `requirements.txt` only if it actually changed between the
+  old and new commit, and restarts `jellystream-api`/`jellystream-web` if those units exist
+- Refuses to run on a dirty working tree (`git status --porcelain`) rather than auto-stashing —
+  a silent stash could bury someone's in-progress local edits
+- **Deliberately a script, not a web endpoint**: the service account's own code tree is read-only
+  by design (see "Permissions model" in `deploy/README.md`), so the running app can't pull its own
+  updates without weakening that hardening. `app/api/system.py` only *checks* — `GET
+  /api/system/version` (local git state) and `GET /api/system/update-check` (latest commit on the
+  selected branch, via GitHub's public REST API — no local git fetch, so no write access needed) —
+  and the PHP "Updates" page (`pages/system.php`) surfaces that plus a channel picker, but applying
+  an update always means running `./update.sh` yourself
+- `PUT /api/system/update-channel` persists the choice to `.env` via a targeted single-line
+  edit (same approach as `setup.sh`'s `_env_set` — never a full-file rewrite) and updates an
+  in-memory override so it's reflected immediately without a restart
+- `setup.sh` now offers to install, enable, and start both systemd services itself (default Y),
+  rendering `deploy/systemd/*.service` for the actual install path and run-as user instead of the
+  hardcoded `/home/oarko/jellystream` template values, then health-checks `/health` a few times
+  to confirm it actually came up. Declining falls back to the previous command-line flow
+  (`./start.sh` / `./start-php.sh` / `./start-lighttpd.sh`), which still works unchanged
+
 ### 🚧 Planned (Phase 3+)
 - Channel dashboard with "now playing" and "up next"
 - Episode/movie deselection per channel
 - Filler content: commercials, bumpers, static image, next-show-immediate
-- Channel logo watermark (ffmpeg overlay)
 - Holiday schedules by date
 - Multi-stream dashboard
 - User authentication
@@ -702,6 +802,16 @@ XMLTV responses include `Cache-Control: no-cache` headers.
 Without `reset`, new entries are appended from `schedule_generated_through`.
 The UI "Regenerate Schedule" button always passes `reset=true`.
 
+### Why Updates Are Script-Only, Not a Web Button
+`deploy/README.md`'s "Permissions model" deliberately gives the systemd service account
+read+execute (`g+rX`) on the whole project tree but write only on `data/`, `logs/`, `.env`, and
+`app/web/php/.phpconfig` — the running service can't modify its own code. That's intentional
+defense-in-depth: a bug or unauthorized request to a web-exposed "apply update" endpoint
+couldn't rewrite the app's own source or trigger a restart. `app/api/system.py` therefore only
+reports (local git state, and the latest commit on GitHub via its public REST API — never a
+local `git fetch`, which would need write access to `.git`); `./update.sh` is what actually
+pulls, and it's run by the admin, who owns the tree and already has `sudo` from `setup.sh`.
+
 ## Development Environment
 
 - **OS**: Kubuntu 25.10 / Debian testing
@@ -713,6 +823,9 @@ The UI "Regenerate Schedule" button always passes `reset=true`.
 - **Logs**: `logs/` (auto-created)
 
 ## Running the Application
+
+`./setup.sh` now installs, enables, and starts both systemd services by default (prompts to
+skip in favor of the command-line flow below — see `deploy/README.md`). Either way:
 
 ```bash
 # Backend
@@ -729,6 +842,10 @@ python run.py
 # Web UI: http://<server-ip>:8080
 # M3U:    http://<server-ip>:8000/api/livetv/m3u/all
 # XMLTV:  http://<server-ip>:8000/api/livetv/xmltv/all
+
+# Update from GitHub (main = stable, nightly = latest)
+./update.sh            # uses UPDATE_CHANNEL from .env (default: main)
+./update.sh nightly    # switch channel and update in one step
 ```
 
 ## References
@@ -744,9 +861,9 @@ python run.py
 
 ---
 
-*Last Updated: 2026-02-24*
-*Version: 0.6.0*
-*Status: Phase 1 + Collections (1.5) + Collections-as-Channel-Source (2.0) complete*
+*Last Updated: 2026-10-07*
+*Version: 0.8.0*
+*Status: Phase 1 + Collections (1.5) + Collections-as-Channel-Source (2.0) + On-Screen Graphic (2.5) + Self-Update/Service-First Setup (2.6) complete*
 
 ### Jellyfin BoxSets in Collections
 Jellyfin can return a whole boxset in place of its movies in library listings (its "group movies

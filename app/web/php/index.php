@@ -181,6 +181,7 @@ $api_ok = $health['success'] && ($health['data']['status'] ?? '') === 'healthy';
         <div class="links">
             <a href="pages/channels.php"                          class="link-btn">📋 All Channels</a>
             <a href="pages/collections.php"                       class="link-btn">📦 Collections</a>
+            <a href="pages/system.php"                             class="link-btn">⬆️ Updates</a>
             <a href="<?php echo getClientApiBaseUrl(); ?>/livetv/m3u/all"   class="link-btn" target="_blank">📄 M3U Playlist</a>
             <a href="<?php echo getClientApiBaseUrl(); ?>/livetv/xmltv/all" class="link-btn" target="_blank">📅 XMLTV EPG</a>
             <a href="/docs"                                        class="link-btn" target="_blank">📖 API Docs</a>

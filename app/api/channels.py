@@ -1,10 +1,14 @@
 """Channel API endpoints."""
 
+import asyncio
+import os
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.logging_config import get_logger
 from app.models.channel import Channel
@@ -20,6 +24,8 @@ router = APIRouter()
 # so an invalid value never reaches ffmpeg command construction downstream.
 VALID_PRESETS = {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium"}
 VALID_HWACCEL = {"none", "vaapi", "qsv", "nvenc"}
+# Kept in sync with app/services/stream_proxy.py _BUG_POSITION_EXPR.
+VALID_BUG_POSITIONS = {"top-left", "top-right", "bottom-left", "bottom-right", "center"}
 
 
 def _validate_transcode_settings(preset: str = None, hwaccel: str = None) -> None:
@@ -33,6 +39,23 @@ def _validate_transcode_settings(preset: str = None, hwaccel: str = None) -> Non
             status_code=400,
             detail=f"Invalid hwaccel '{hwaccel}'. Must be one of: {sorted(VALID_HWACCEL)}",
         )
+
+
+def _validate_bug_settings(
+    position: str = None, interval_seconds: int = None,
+    duration_seconds: int = None, scale_percent: int = None,
+) -> None:
+    if position is not None and position not in VALID_BUG_POSITIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid bug_position '{position}'. Must be one of: {sorted(VALID_BUG_POSITIONS)}",
+        )
+    if interval_seconds is not None and interval_seconds < 0:
+        raise HTTPException(status_code=400, detail="bug_interval_seconds must be >= 0")
+    if duration_seconds is not None and duration_seconds <= 0:
+        raise HTTPException(status_code=400, detail="bug_duration_seconds must be > 0")
+    if scale_percent is not None and not (1 <= scale_percent <= 100):
+        raise HTTPException(status_code=400, detail="bug_scale_percent must be between 1 and 100")
 
 
 def _channel_to_dict(channel: Channel) -> dict:
@@ -52,6 +75,12 @@ def _channel_to_dict(channel: Channel) -> dict:
         "transcode_preset": channel.transcode_preset,
         "hwaccel": channel.hwaccel,
         "hwaccel_device": channel.hwaccel_device,
+        "bug_image_path": channel.bug_image_path,
+        "bug_enabled": channel.bug_enabled,
+        "bug_position": channel.bug_position,
+        "bug_interval_seconds": channel.bug_interval_seconds,
+        "bug_duration_seconds": channel.bug_duration_seconds,
+        "bug_scale_percent": channel.bug_scale_percent,
         "created_at": channel.created_at,
         "updated_at": channel.updated_at,
     }
@@ -147,6 +176,10 @@ async def create_channel(data: CreateChannelRequest, db: AsyncSession = Depends(
     )
 
     _validate_transcode_settings(data.transcode_preset, data.hwaccel)
+    _validate_bug_settings(
+        data.bug_position, data.bug_interval_seconds,
+        data.bug_duration_seconds, data.bug_scale_percent,
+    )
 
     channel = Channel(
         name=data.name,
@@ -158,6 +191,11 @@ async def create_channel(data: CreateChannelRequest, db: AsyncSession = Depends(
         transcode_preset=data.transcode_preset,
         hwaccel=data.hwaccel,
         hwaccel_device=(data.hwaccel_device or None),
+        bug_enabled=data.bug_enabled,
+        bug_position=data.bug_position,
+        bug_interval_seconds=data.bug_interval_seconds,
+        bug_duration_seconds=data.bug_duration_seconds,
+        bug_scale_percent=data.bug_scale_percent,
     )
     db.add(channel)
     await db.flush()  # Assign ID without committing
@@ -234,6 +272,10 @@ async def update_channel(
         raise HTTPException(status_code=404, detail="Channel not found")
 
     _validate_transcode_settings(data.transcode_preset, data.hwaccel)
+    _validate_bug_settings(
+        data.bug_position, data.bug_interval_seconds,
+        data.bug_duration_seconds, data.bug_scale_percent,
+    )
 
     if data.name is not None:
         channel.name = data.name
@@ -259,6 +301,16 @@ async def update_channel(
         channel.hwaccel = data.hwaccel
     if data.hwaccel_device is not None:
         channel.hwaccel_device = data.hwaccel_device or None
+    if data.bug_enabled is not None:
+        channel.bug_enabled = data.bug_enabled
+    if data.bug_position is not None:
+        channel.bug_position = data.bug_position
+    if data.bug_interval_seconds is not None:
+        channel.bug_interval_seconds = data.bug_interval_seconds
+    if data.bug_duration_seconds is not None:
+        channel.bug_duration_seconds = data.bug_duration_seconds
+    if data.bug_scale_percent is not None:
+        channel.bug_scale_percent = data.bug_scale_percent
 
     if data.libraries is not None:
         await db.execute(
@@ -322,10 +374,149 @@ async def delete_channel(channel_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Channel not found")
 
     name = channel.name
+    bug_path = channel.bug_image_path
     await db.delete(channel)
     await db.commit()
+    if bug_path and os.path.isfile(bug_path):
+        try:
+            os.remove(bug_path)
+        except OSError as exc:
+            logger.warning(f"delete_channel: could not remove bug image {bug_path!r}: {exc}")
     logger.info(f"delete_channel: deleted channel '{name}' (id={channel_id})")
     return {"message": "Channel deleted successfully"}
+
+
+# ─── POST /api/channels/{channel_id}/bug-image ───────────────────────────────
+# Image for the channel's on-screen graphic ("bug"). Stored under
+# settings.LOGOS_PATH as channel_{id}_bug{ext}; bug_image_path is only set
+# once ffprobe confirms the upload actually decodes as an image, so a bad
+# upload can't silently break the stream later.
+
+_BUG_IMAGE_MAX_BYTES = 5 * 1024 * 1024  # 5MB
+_BUG_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+
+async def _probe_is_image(path: str) -> bool:
+    """True if ffprobe can find a video/image stream in the file at `path`."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "csv=p=0",
+            path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return False
+        if proc.returncode != 0:
+            return False
+        # A corrupt file can still be "demuxed" by extension with a stream
+        # entry of width=0,height=0 and exit code 0 — require real dimensions.
+        try:
+            width_str, height_str = stdout.decode().strip().split(",")
+            return int(width_str) > 0 and int(height_str) > 0
+        except (ValueError, UnicodeDecodeError):
+            return False
+    except Exception as exc:
+        logger.warning(f"_probe_is_image: ffprobe failed for {path!r}: {exc}")
+        return False
+
+
+_BUG_IMAGE_MEDIA_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+}
+
+
+@router.get("/{channel_id}/bug-image")
+async def get_bug_image(channel_id: int, db: AsyncSession = Depends(get_db)):
+    """Serve the uploaded on-screen graphic image (for preview in the UI)."""
+    logger.debug(f"get_bug_image: channel_id={channel_id}")
+    result = await db.execute(select(Channel).where(Channel.id == channel_id))
+    channel = result.scalar_one_or_none()
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    if not channel.bug_image_path or not os.path.isfile(channel.bug_image_path):
+        raise HTTPException(status_code=404, detail="No bug image uploaded")
+    ext = os.path.splitext(channel.bug_image_path)[1].lower()
+    media_type = _BUG_IMAGE_MEDIA_TYPES.get(ext, "application/octet-stream")
+    return FileResponse(channel.bug_image_path, media_type=media_type)
+
+
+@router.post("/{channel_id}/bug-image")
+async def upload_bug_image(
+    channel_id: int,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload (or replace) the image used for this channel's on-screen graphic."""
+    logger.debug(f"upload_bug_image: channel_id={channel_id}, filename={file.filename!r}")
+    result = await db.execute(select(Channel).where(Channel.id == channel_id))
+    channel = result.scalar_one_or_none()
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found")
+
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in _BUG_IMAGE_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{ext}'. Allowed: {sorted(_BUG_IMAGE_EXTENSIONS)}",
+        )
+
+    data = await file.read(_BUG_IMAGE_MAX_BYTES + 1)
+    if len(data) > _BUG_IMAGE_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="Image must be 5MB or smaller")
+    if not data:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    os.makedirs(settings.LOGOS_PATH, exist_ok=True)
+    tmp_path = os.path.join(settings.LOGOS_PATH, f".channel_{channel_id}_bug_upload{ext}")
+    with open(tmp_path, "wb") as f:
+        f.write(data)
+
+    if not await _probe_is_image(tmp_path):
+        os.remove(tmp_path)
+        logger.warning(f"upload_bug_image: channel {channel_id} — upload did not decode as an image")
+        raise HTTPException(status_code=400, detail="That file doesn't look like a valid image")
+
+    final_path = os.path.join(settings.LOGOS_PATH, f"channel_{channel_id}_bug{ext}")
+    old_path = channel.bug_image_path
+    os.replace(tmp_path, final_path)
+    if old_path and old_path != final_path and os.path.isfile(old_path):
+        try:
+            os.remove(old_path)
+        except OSError:
+            pass
+
+    channel.bug_image_path = final_path
+    await db.commit()
+    logger.info(f"upload_bug_image: channel {channel_id} — saved to {final_path!r}")
+    return {"message": "Image uploaded", "bug_image_path": final_path}
+
+
+@router.delete("/{channel_id}/bug-image")
+async def delete_bug_image(channel_id: int, db: AsyncSession = Depends(get_db)):
+    """Remove the on-screen graphic image (and clear the channel's setting)."""
+    logger.debug(f"delete_bug_image: channel_id={channel_id}")
+    result = await db.execute(select(Channel).where(Channel.id == channel_id))
+    channel = result.scalar_one_or_none()
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found")
+
+    if channel.bug_image_path and os.path.isfile(channel.bug_image_path):
+        try:
+            os.remove(channel.bug_image_path)
+        except OSError as exc:
+            logger.warning(f"delete_bug_image: could not remove file: {exc}")
+    channel.bug_image_path = None
+    await db.commit()
+    logger.info(f"delete_bug_image: channel {channel_id} — image removed")
+    return {"message": "Image removed"}
 
 
 # ─── POST /api/channels/{channel_id}/generate-schedule ───────────────────────

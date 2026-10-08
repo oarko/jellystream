@@ -346,6 +346,81 @@ $public_url_is_local = in_array(
             <div class="hint">Leave blank to auto-detect. Set this if the machine has more than one GPU.</div>
         </div>
 
+        <!-- On-Screen Graphic ("bug") -->
+        <h2 style="margin-top:24px;">On-Screen Graphic</h2>
+        <div class="hint" style="margin-bottom:12px;">
+            Overlay a logo/watermark image on this channel's stream (like a TV station bug).
+            Pick a corner, how often it appears, and for how long.
+        </div>
+        <?php
+        $bug_enabled  = !empty($channel['bug_enabled']);
+        $bug_position = $channel['bug_position'] ?? 'bottom-right';
+        $bug_interval = $channel['bug_interval_seconds'] ?? 0;
+        $bug_duration = $channel['bug_duration_seconds'] ?? 10;
+        $bug_scale    = $channel['bug_scale_percent'] ?? 12;
+        $has_bug_image = $is_edit && !empty($channel['bug_image_path']);
+        $bug_image_url = $has_bug_image
+            ? getClientApiBaseUrl() . "/channels/{$channel_id}/bug-image?t=" . time()
+            : '';
+        $bug_position_options = [
+            'top-left'     => 'Top Left',
+            'top-right'    => 'Top Right',
+            'bottom-left'  => 'Bottom Left',
+            'bottom-right' => 'Bottom Right',
+            'center'       => 'Center',
+        ];
+        ?>
+        <div class="toggle-row">
+            <label class="switch">
+                <input type="checkbox" id="ch-bug-enabled" <?php echo $bug_enabled ? 'checked' : ''; ?>>
+                <span class="slider"></span>
+            </label>
+            <label for="ch-bug-enabled">Show on-screen graphic</label>
+        </div>
+
+        <?php if ($is_edit): ?>
+        <div class="form-group">
+            <label>Image</label>
+            <div style="display:flex;align-items:center;gap:14px;">
+                <img id="bug-image-preview"
+                     src="<?php echo htmlspecialchars($bug_image_url); ?>"
+                     style="<?php echo $has_bug_image ? '' : 'display:none;'; ?>max-height:60px;max-width:160px;background:#1a1a1a;border:1px solid #333;border-radius:4px;padding:4px;">
+                <span id="bug-image-none" style="<?php echo $has_bug_image ? 'display:none;' : ''; ?>color:#888;font-size:13px;">No image uploaded</span>
+                <input type="file" id="bug-image-file" accept=".png,.jpg,.jpeg,.gif,.webp,.bmp" style="display:none;" onchange="uploadBugImage()">
+                <button class="btn btn-secondary" type="button" onclick="document.getElementById('bug-image-file').click();">Upload Image</button>
+                <button class="btn" type="button" id="bug-image-remove-btn"
+                        style="<?php echo $has_bug_image ? '' : 'display:none;'; ?>background:#c0392b;color:#fff;"
+                        onclick="removeBugImage()">Remove</button>
+            </div>
+            <div class="hint">PNG, JPG, GIF, WEBP, or BMP — 5MB max. Transparent PNG recommended.</div>
+            <div id="bug-image-status" style="font-size:13px;margin-top:4px;"></div>
+        </div>
+        <?php else: ?>
+        <div class="hint" style="margin-bottom:12px;">Save the channel first, then come back here to upload an image.</div>
+        <?php endif; ?>
+
+        <div class="form-group">
+            <label>Position</label>
+            <select id="ch-bug-position">
+                <?php foreach ($bug_position_options as $val => $label): ?>
+                <option value="<?php echo $val; ?>" <?php echo ($bug_position === $val) ? 'selected' : ''; ?>><?php echo $label; ?></option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Size (% of video width)</label>
+            <input type="number" id="ch-bug-scale" value="<?php echo intval($bug_scale); ?>" min="2" max="50">
+        </div>
+        <div class="form-group">
+            <label>Appears Every (seconds)</label>
+            <input type="number" id="ch-bug-interval" value="<?php echo intval($bug_interval); ?>" min="0" onchange="onBugIntervalChange()">
+            <div class="hint">0 = always visible. Otherwise the graphic flashes on periodically.</div>
+        </div>
+        <div class="form-group" id="ch-bug-duration-group" <?php echo (intval($bug_interval) === 0) ? 'hidden' : ''; ?>>
+            <label>Stays Visible For (seconds)</label>
+            <input type="number" id="ch-bug-duration" value="<?php echo intval($bug_duration); ?>" min="1">
+        </div>
+
         <?php if ($is_edit): ?>
         <!-- Schedule actions -->
         <div style="margin-top:24px;border-top:1px solid #333;padding-top:16px;">
@@ -516,6 +591,71 @@ function onTypeChange() {
 function onHwaccelChange() {
     const hwaccel = document.getElementById('ch-tc-hwaccel').value;
     document.getElementById('ch-tc-device-group').hidden = (hwaccel === 'none');
+}
+
+// ── On-screen graphic ("bug") ────────────────────────────────────────────────────
+function onBugIntervalChange() {
+    const interval = parseInt(document.getElementById('ch-bug-interval').value, 10) || 0;
+    document.getElementById('ch-bug-duration-group').hidden = (interval === 0);
+}
+
+async function uploadBugImage() {
+    const input = document.getElementById('bug-image-file');
+    const file  = input.files[0];
+    if (!file) return;
+
+    const statusEl = document.getElementById('bug-image-status');
+    statusEl.textContent = 'Uploading…';
+    statusEl.style.color = '#888';
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const resp = await fetch(`${API_BASE}/channels/${CHANNEL_ID}/bug-image`, {
+            method: 'POST',
+            body: formData,
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            const preview = document.getElementById('bug-image-preview');
+            preview.src = `${API_BASE}/channels/${CHANNEL_ID}/bug-image?t=${Date.now()}`;
+            preview.style.display = '';
+            document.getElementById('bug-image-none').style.display = 'none';
+            document.getElementById('bug-image-remove-btn').style.display = '';
+            statusEl.textContent = 'Image uploaded.';
+            statusEl.style.color = '#81c784';
+        } else {
+            statusEl.textContent = data.detail || 'Upload failed.';
+            statusEl.style.color = '#e57373';
+        }
+    } catch (e) {
+        statusEl.textContent = 'Network error: ' + e.message;
+        statusEl.style.color = '#e57373';
+    }
+    input.value = '';
+}
+
+async function removeBugImage() {
+    if (!confirm('Remove the on-screen graphic image?')) return;
+    const statusEl = document.getElementById('bug-image-status');
+    try {
+        const resp = await fetch(`${API_BASE}/channels/${CHANNEL_ID}/bug-image`, { method: 'DELETE' });
+        const data = await resp.json();
+        if (resp.ok) {
+            document.getElementById('bug-image-preview').style.display = 'none';
+            document.getElementById('bug-image-none').style.display = '';
+            document.getElementById('bug-image-remove-btn').style.display = 'none';
+            statusEl.textContent = 'Image removed.';
+            statusEl.style.color = '#81c784';
+        } else {
+            statusEl.textContent = data.detail || 'Remove failed.';
+            statusEl.style.color = '#e57373';
+        }
+    } catch (e) {
+        statusEl.textContent = 'Network error: ' + e.message;
+        statusEl.style.color = '#e57373';
+    }
 }
 
 function filterLibraryPicker() {
@@ -807,6 +947,11 @@ async function saveChannel() {
         transcode_preset:     document.getElementById('ch-tc-preset').value,
         hwaccel:              document.getElementById('ch-tc-hwaccel').value,
         hwaccel_device:       document.getElementById('ch-tc-hw-device').value.trim() || null,
+        bug_enabled:          document.getElementById('ch-bug-enabled').checked,
+        bug_position:         document.getElementById('ch-bug-position').value,
+        bug_interval_seconds: parseInt(document.getElementById('ch-bug-interval').value, 10) || 0,
+        bug_duration_seconds: parseInt(document.getElementById('ch-bug-duration').value, 10) || 10,
+        bug_scale_percent:    parseInt(document.getElementById('ch-bug-scale').value, 10) || 12,
     };
 
     const url    = IS_EDIT ? `${API_BASE}/channels/${CHANNEL_ID}` : `${API_BASE}/channels/`;

@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     # Scheduler
     SCHEDULER_ENABLED: bool = True
 
+    # Update channel — which branch `update.sh` pulls from and the web UI's
+    # "check for updates" compares HEAD against. "main" (stable) | "nightly"
+    # (latest, may be unstable). Changing this via the API persists it back
+    # to .env; update.sh reads the same value when run without an argument.
+    UPDATE_CHANNEL: str = "main"
+
     # Logging
     LOG_LEVEL: str = "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
     LOG_TO_CONSOLE: bool = True  # set False under systemd to avoid duplicating

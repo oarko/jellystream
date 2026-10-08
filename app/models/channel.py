@@ -56,5 +56,26 @@ class Channel(Base):
     # for vaapi when a machine has more than one GPU. Blank = auto-detect.
     hwaccel_device = Column(String(255), nullable=True)
 
+    # ── On-screen graphic ("bug") ───────────────────────────────────────────────
+    # Absolute path to the uploaded image (under LOGOS_PATH), or NULL if none
+    # has been uploaded. The bug never appears unless BOTH this is set AND
+    # bug_enabled is true.
+    bug_image_path = Column(String(500), nullable=True)
+    bug_enabled = Column(Boolean, nullable=False, default=False)
+
+    # "top-left" | "top-right" | "bottom-left" | "bottom-right" | "center"
+    bug_position = Column(String(20), nullable=False, default="bottom-right")
+
+    # How often the bug appears, in seconds. 0 = always visible while
+    # bug_enabled (no flashing). >0 = appears for bug_duration_seconds every
+    # bug_interval_seconds, restarting from the beginning of each schedule
+    # entry (each is a separate ffmpeg process).
+    bug_interval_seconds = Column(Integer, nullable=False, default=0)
+    bug_duration_seconds = Column(Integer, nullable=False, default=10)
+
+    # The bug's width as a percentage of the video's width; height follows
+    # automatically from the image's own aspect ratio.
+    bug_scale_percent = Column(Integer, nullable=False, default=12)
+
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

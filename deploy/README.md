@@ -7,12 +7,22 @@ Two services, mirroring the two dev scripts:
 | `start.sh`           | `jellystream-api.service`  | FastAPI backend (`run.py` via the venv) |
 | `start-lighttpd.sh`  | `jellystream-web.service`  | PHP frontend (Lighttpd + FastCGI) |
 
-Both units assume the project lives at `/home/oarko/jellystream` and run as
-a dedicated **`jellystream` system user** (no login, no home directory) —
-`./setup.sh` creates this user automatically (see below). **Edit
-`WorkingDirectory=`, `ExecStart=`, `User=` and `Group=` in both `.service`
-files first if the project path differs on this machine, or if you chose
-not to create the dedicated user.**
+**As of this version, `./setup.sh` installs both of these automatically** —
+it's now the default/recommended path, offered right after permissions are
+configured, with a prompt to decline if you'd rather run JellyStream
+directly from the command line instead (`./start.sh` / `./start-php.sh` /
+`./start-lighttpd.sh`). It renders the `.service` files for *this* install
+(actual project path, actual run-as user) rather than the raw templates
+below, so the manual steps in this doc are for anyone installing by hand,
+re-installing after moving the project, or customizing further.
+
+The checked-in templates in `deploy/systemd/` assume the project lives at
+`/home/oarko/jellystream` and run as a dedicated **`jellystream` system
+user** (no login, no home directory) — `./setup.sh` creates this user
+automatically (see below). **Edit `WorkingDirectory=`, `ExecStart=`,
+`User=` and `Group=` in both `.service` files first if installing by hand
+and the project path differs on this machine, or if you chose not to
+create the dedicated user.**
 
 ## Prerequisites
 
@@ -112,3 +122,30 @@ sudo systemctl stop jellystream-api.service jellystream-web.service
 `start-lighttpd.sh` was tweaked to `exec` into `lighttpd` at the end instead
 of running it as a child process, so `systemctl stop`/`restart` reliably
 stops the actual lighttpd process rather than only the wrapper script.
+
+## Updating
+
+`./update.sh` pulls the latest code from GitHub (`main` = stable, `nightly`
+= latest/may be unstable — see `UPDATE_CHANNEL` in `.env`), reinstalls
+Python dependencies if `requirements.txt` changed, and restarts these two
+services:
+
+```bash
+./update.sh              # use the channel saved in .env (default: main)
+./update.sh nightly       # switch to (and save) the nightly channel, then update
+./update.sh -y            # skip the "restart now?" prompt
+```
+
+It's deliberately run by you (the admin who owns this checkout and has
+`sudo`), not by the services themselves — their account can only *read*
+the code tree (see "Permissions model" above), so a web-triggered
+self-update isn't possible under this permission model without weakening
+it. The web UI's **Updates** page (`pages/system.php`) only *checks* GitHub
+for the latest commit on your selected channel (read-only, via GitHub's
+public API — no local git operation) and shows the result; actually
+applying an update is always this script.
+
+`update.sh` refuses to run if the working tree has uncommitted changes, and
+only ever fast-forwards (`git merge --ff-only`) — if your local branch has
+diverged from `origin/<channel>` (shouldn't happen on a clean deployment),
+it stops and tells you how to inspect the difference rather than guessing.

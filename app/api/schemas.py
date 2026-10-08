@@ -41,6 +41,14 @@ class CreateChannelRequest(BaseModel):
     transcode_preset: str = "veryfast"
     hwaccel: str = "none"               # "none" | "vaapi" | "qsv" | "nvenc"
     hwaccel_device: Optional[str] = None
+    # On-screen graphic ("bug") settings — the image itself is uploaded
+    # separately via POST /api/channels/{id}/bug-image, so there's no
+    # bug_image_path field here.
+    bug_enabled: bool = False
+    bug_position: str = "bottom-right"  # top-left|top-right|bottom-left|bottom-right|center
+    bug_interval_seconds: int = 0       # 0 = always visible while bug_enabled
+    bug_duration_seconds: int = 10
+    bug_scale_percent: int = 12
 
 
 class UpdateChannelRequest(BaseModel):
@@ -62,6 +70,12 @@ class UpdateChannelRequest(BaseModel):
     transcode_preset: Optional[str] = None
     hwaccel: Optional[str] = None
     hwaccel_device: Optional[str] = None
+    # On-screen graphic ("bug") settings — omit to leave unchanged.
+    bug_enabled: Optional[bool] = None
+    bug_position: Optional[str] = None
+    bug_interval_seconds: Optional[int] = None
+    bug_duration_seconds: Optional[int] = None
+    bug_scale_percent: Optional[int] = None
 
 
 # ─── Schedule Schemas ─────────────────────────────────────────────────────────

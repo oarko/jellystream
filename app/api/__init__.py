@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from app.api import streams, schedules, channels, jellyfin, livetv, collections
+from app.api import streams, schedules, channels, jellyfin, livetv, collections, system
 
 router = APIRouter()
 
@@ -16,3 +16,4 @@ router.include_router(schedules.router, prefix="/schedules", tags=["schedules"])
 router.include_router(jellyfin.router, prefix="/jellyfin", tags=["jellyfin"])
 router.include_router(livetv.router, prefix="/livetv", tags=["livetv"])
 router.include_router(collections.router, prefix="/collections", tags=["collections"])
+router.include_router(system.router, prefix="/system", tags=["system"])

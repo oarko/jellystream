@@ -1,5 +1,15 @@
 # Lighttpd Deployment Guide
 
+> **This is the manual/advanced path.** JellyStream's included `./start-lighttpd.sh` takes a
+> simpler approach than the hand-written config below: it auto-generates its own lighttpd config
+> at runtime and runs standalone — no `/etc/lighttpd` conf-available file, and no reverse-proxy
+> needed, since the PHP app calls the FastAPI backend directly as an HTTP client rather than
+> through lighttpd's `proxy.server`. For production, run `./setup.sh` and accept the systemd
+> install prompt — it wires up `start-lighttpd.sh` as a systemd service automatically (see
+> [deploy/README.md](../deploy/README.md)). Use this document if you want to understand raw
+> Lighttpd configuration, need to tune FastCGI/SSL settings manually, or are integrating
+> JellyStream into an existing system-wide Lighttpd instance instead.
+
 ## Why Lighttpd?
 
 Lighttpd is an excellent choice for JellyStream PHP frontend deployment:
@@ -131,7 +141,15 @@ fastcgi.server = ( ".php" =>
 
 ## Running Both Services
 
-### Method 1: SystemD Services
+> **Prefer `./setup.sh`'s automated systemd install over hand-rolling the units below** — it
+> renders `deploy/systemd/jellystream-api.service` and `jellystream-web.service` (which runs
+> `start-lighttpd.sh`, not system lighttpd directly) for your actual install path and run-as
+> user, then enables and starts both. The manual example below predates that and wires lighttpd
+> up as its own separate systemd unit with the hand-written config from this doc — it works,
+> but it's a different (and now unmaintained-by-default) path from what `setup.sh`/`update.sh`
+> assume. Only follow it if you have a reason not to use the automated install.
+
+### Method 1: SystemD Services (manual, superseded by `./setup.sh`)
 
 Create `/etc/systemd/system/jellystream-api.service`:
 

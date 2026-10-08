@@ -236,6 +236,8 @@ def _build_ffmpeg_cmd(
     bug_interval_seconds: int = 0,
     bug_duration_seconds: int = 10,
     bug_scale_percent: int = 12,
+    bug_max_height_percent: int = 30,
+    bug_opacity_percent: int = 100,
 ) -> list:
     """
     Build the ffmpeg command for one schedule entry.
@@ -294,6 +296,17 @@ def _build_ffmpeg_cmd(
         bug_interval_seconds > 0.
     bug_scale_percent: the bug's width as a percentage of the video's width
         (height follows automatically, keeping the image's own aspect ratio).
+    bug_max_height_percent: upper bound on the bug's height, as a percentage
+        of the video's height — independent of bug_scale_percent, so a
+        tall/narrow image can't blow up to an unreasonable height just
+        because its width fits the width cap. Whichever of the two
+        constraints (width % or height %) is more restrictive wins; aspect
+        ratio is always preserved either way.
+    bug_opacity_percent: 1-100 (100 = fully opaque). Below 100, multiplied
+        into whatever alpha the source image already has (via
+        colorchannelmixer), so a PNG with partial transparency still gets
+        proportionally more transparent instead of having its own alpha
+        overridden outright.
     """
     # When any -map is present ffmpeg disables automatic stream selection, so
     # we must map both video and audio explicitly.  If ffprobe identified a
@@ -399,6 +412,8 @@ def _build_ffmpeg_cmd(
         cmd += ["-map", "0:v:0", *audio_map]
     else:
         scale_pct = max(1, min(100, bug_scale_percent)) / 100.0
+        max_h_pct = max(1, min(100, bug_max_height_percent)) / 100.0
+        opacity = max(1, min(100, bug_opacity_percent)) / 100.0
         enable_clause = ""
         if bug_interval_seconds and bug_interval_seconds > 0:
             enable_clause = f":enable='lt(mod(t\\,{bug_interval_seconds}),{bug_duration_seconds})'"
@@ -409,14 +424,34 @@ def _build_ffmpeg_cmd(
         if pre_parts:
             fc_parts.append(f"[0:v]{','.join(pre_parts)}[base]")
             base_pad = "[base]"
-        # scale2ref: scale input [1:v] (the bug) to scale_pct of the
-        # reference's ([base_pad]) width, keeping the bug's own aspect ratio
-        # — [wm] is the scaled bug, [basev] is the reference passed through
-        # unchanged. Confirmed empirically: this is the standard ffmpeg idiom
-        # for sizing a watermark relative to the main video, not just a
-        # fixed pixel size that would look wrong across different sources.
-        fc_parts.append(f"[1:v]{base_pad}scale2ref=w=iw*{scale_pct}:h=ow/mdar[wm][basev]")
-        fc_parts.append(f"[basev][wm]overlay={position_expr}{enable_clause}[vout]")
+        # scale2ref: scale input [1:v] (the bug) relative to the reference's
+        # ([base_pad]) dimensions — [wm] is the scaled bug, [basev] is the
+        # reference passed through unchanged. Confirmed empirically (actual
+        # ffmpeg variable semantics here are the OPPOSITE of what the scale
+        # filter's own docs suggest): within this expression, iw/ih are the
+        # REFERENCE's (video's) width/height, main_w/main_h are the bug
+        # image's OWN original width/height, and mdar is the bug's own
+        # aspect ratio. The width is the smaller of two independent bounds —
+        # scale_pct of the video's width, or whatever width would produce a
+        # height of max_h_pct of the video's height at the bug's own aspect
+        # ratio — so one constraint (commonly width) usually governs, but a
+        # tall/narrow image never exceeds the height bound just because it
+        # fits the width one. h always derives from the resulting width to
+        # keep the image's own proportions.
+        fc_parts.append(
+            f"[1:v]{base_pad}scale2ref="
+            f"w=min(iw*{scale_pct}\\,ih*{max_h_pct}*mdar):h=ow/mdar[wm][basev]"
+        )
+        wm_label = "[wm]"
+        if opacity < 1.0:
+            # format=rgba guarantees an alpha channel exists (opaque sources
+            # have none), then colorchannelmixer multiplies whatever alpha is
+            # already there by `opacity` — a PNG with its own partial
+            # transparency still gets proportionally MORE transparent rather
+            # than having its alpha overwritten outright.
+            fc_parts.append(f"[wm]format=rgba,colorchannelmixer=aa={opacity}[wmt]")
+            wm_label = "[wmt]"
+        fc_parts.append(f"[basev]{wm_label}overlay={position_expr}{enable_clause}[vout]")
         final_label = "[vout]"
         if post_parts:
             fc_parts.append(f"[vout]{','.join(post_parts)}[vfinal]")
@@ -568,6 +603,7 @@ class _TranscodeSettings:
         "max_height", "preset", "hwaccel", "hwaccel_device",
         "bug_image_path", "bug_position", "bug_interval_seconds",
         "bug_duration_seconds", "bug_scale_percent",
+        "bug_max_height_percent", "bug_opacity_percent",
     )
 
     def __init__(self, channel: Channel):
@@ -582,6 +618,8 @@ class _TranscodeSettings:
         self.bug_interval_seconds = channel.bug_interval_seconds or 0
         self.bug_duration_seconds = channel.bug_duration_seconds or 10
         self.bug_scale_percent = channel.bug_scale_percent or 12
+        self.bug_max_height_percent = channel.bug_max_height_percent or 30
+        self.bug_opacity_percent = channel.bug_opacity_percent or 100
 
 
 class _Segment:
@@ -672,6 +710,8 @@ class _Segment:
                 bug_interval_seconds=s.bug_interval_seconds,
                 bug_duration_seconds=s.bug_duration_seconds,
                 bug_scale_percent=s.bug_scale_percent,
+                bug_max_height_percent=s.bug_max_height_percent,
+                bug_opacity_percent=s.bug_opacity_percent,
             )
             logger.debug(
                 f"_Segment: starting ffmpeg for '{self.entry.title}' (id={self.entry.id}), "

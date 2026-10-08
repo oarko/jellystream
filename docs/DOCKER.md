@@ -9,6 +9,12 @@ JellyStream provides a complete Docker setup with two containers:
 
 Both containers communicate over a private Docker network.
 
+> **Updating:** `./update.sh` (git `main`/`nightly` pull) is for git-based installs and doesn't
+> apply here — update a Docker deployment the usual way: `git pull` (or re-download) the repo,
+> then `docker-compose build --no-cache && docker-compose up -d`. Hardware-accelerated
+> transcoding (`hwaccel` on a channel) also isn't wired up in `docker-compose.yml` — it would
+> need the GPU device (e.g. `/dev/dri`) passed through to the `api` container.
+
 ## Quick Start
 
 ```bash

@@ -17,13 +17,18 @@ A virtual TV channel generator built on top of Jellyfin. JellyStream creates 24/
 - **Genre-based auto-scheduling** — fills 7 days forward from Jellyfin content matching your genre filters
 - **Genre include/exclude** — include genres you want, exclude genres you don't (e.g. Action channel that excludes Animation)
 - **Multiple libraries per channel** — mix Movies and TV Shows on one channel
+- **Collections** — curate named sets of movies/episodes/seasons (including Jellyfin boxset imports) and use them as channel content sources alongside or instead of libraries
 - **Persistent EPG** — schedules stored in SQLite; same time slot = same content regardless of viewer
 - **M3U + XMLTV endpoints** — 3-hour lookback, 7-day forward window for full EPG coverage
-- **ffmpeg stream proxy with time-offset** — `-ss` seek so viewers join at the correct position
+- **Shared ffmpeg stream pipeline with time-offset** — one encode per channel regardless of viewer count; viewers join at the correct position, never restarting from the beginning
+- **Hardware-accelerated transcoding** — optional per-channel VAAPI/QSV/NVENC encode (decode always stays in software) with automatic software fallback
+- **On-screen graphic ("channel bug")** — overlay a logo/watermark image, pick a corner, and schedule how often it flashes on
 - **Preferred audio language** — configurable ISO 639-2 code (e.g. `eng`, `jpn`); falls back to first track
 - **Jellyfin Live TV registration** — register the M3U tuner and XMLTV listing provider directly from the UI
 - **APScheduler background job** — daily 2 AM job extends schedules for channels running low
-- **Web interface** — PHP + Lighttpd frontend for managing channels and viewing schedules
+- **Web interface** — PHP + Lighttpd frontend for managing channels, collections, and schedules
+- **Self-update from GitHub** — `./update.sh` pulls `main` (stable) or `nightly` (latest), selectable from the web UI
+- **Runs as a systemd service** — `./setup.sh` installs, enables, and starts it by default; auto-restarts on crash/reboot
 - **Comprehensive logging** — daily rotating log files with configurable level
 
 ## Prerequisites
@@ -38,7 +43,7 @@ A virtual TV channel generator built on top of Jellyfin. JellyStream creates 24/
 ### Automated Setup (Recommended)
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/oarko/jellystream.git
 cd jellystream
 ./setup.sh
 ```
@@ -47,8 +52,10 @@ cd jellystream
 - Install system packages (python3-venv, ffmpeg on Debian/Ubuntu)
 - Create a virtual environment and install Python dependencies
 - Copy `.env.example` → `.env` and prompt for Jellyfin URL and API key
+- **Install, enable, and start JellyStream as a systemd service by default** — it auto-restarts on
+  crash and starts on boot. Decline the prompt to run it from the command line instead (see below).
 
-Then start the application:
+If you skipped the systemd install (or want a quick one-off run), start it manually:
 
 ```bash
 ./start.sh
@@ -114,28 +121,35 @@ Once running:
 jellystream/
 ├── app/
 │   ├── api/              # FastAPI route handlers
-│   │   ├── channels.py       # Channel CRUD (JSON body, Pydantic)
+│   │   ├── channels.py       # Channel CRUD + bug-image upload (JSON body, Pydantic)
+│   │   ├── collections.py    # Collection CRUD + boxset import + file verify
 │   │   ├── schedules.py      # Schedule entries + "now playing"
 │   │   ├── livetv.py         # M3U, XMLTV, stream proxy route
 │   │   ├── jellyfin.py       # Jellyfin library/genre browser
+│   │   ├── system.py         # Version info + read-only GitHub update check
 │   │   └── schemas.py        # Pydantic request/response models
 │   ├── core/             # Config, database init, logging
 │   ├── integrations/     # JellyfinClient (auth, items, stream URL)
 │   ├── models/           # SQLAlchemy models
-│   │   ├── channel.py
+│   │   ├── channel.py        # Includes transcode + on-screen-graphic settings
 │   │   ├── channel_library.py
+│   │   ├── channel_collection_source.py
+│   │   ├── collection.py
+│   │   ├── collection_item.py
 │   │   ├── genre_filter.py
 │   │   └── schedule_entry.py
 │   ├── services/         # Business logic
 │   │   ├── schedule_generator.py  # Genre-based 7-day schedule builder
-│   │   ├── stream_proxy.py        # ffmpeg proxy with time-offset + language selection
+│   │   ├── collection_service.py  # NFO/thumbnail enrichment + file verify
+│   │   ├── stream_proxy.py        # Shared per-channel ffmpeg pipeline, hwaccel, overlay
 │   │   └── scheduler.py           # APScheduler daily job
 │   └── web/
 │       └── php/          # Lighttpd + PHP web interface
 ├── data/
 │   ├── database/         # SQLite database (auto-created)
 │   ├── commercials/      # (reserved for future filler content)
-│   └── logos/            # (reserved for future channel logos)
+│   └── logos/            # Uploaded channel on-screen graphic images
+├── deploy/               # systemd units + logrotate config (installed by setup.sh)
 ├── docker/               # Docker build files
 ├── docs/                 # API documentation
 ├── logs/                 # Rotating log files (auto-created)
@@ -143,7 +157,8 @@ jellystream/
 ├── docker-compose.yml
 ├── requirements.txt
 ├── run.py                # Application launcher
-├── setup.sh              # Automated setup script
+├── setup.sh              # Automated setup script (installs as a systemd service by default)
+├── update.sh             # Pulls main/nightly from GitHub, reinstalls deps, restarts services
 └── start.sh              # Quick start with venv activation
 ```
 
@@ -157,10 +172,22 @@ jellystream/
 ## Planned (not yet implemented)
 
 - Filler content: commercials, bumpers, static images between shows
-- Channel logo watermark (ffmpeg overlay)
 - Episode/movie deselection per channel
 - Holiday schedule overrides
 - User authentication for the web interface
+
+## Updating
+
+```bash
+./update.sh            # pulls the channel saved in .env (UPDATE_CHANNEL, default: main)
+./update.sh nightly     # switch to the nightly (latest) channel and update in one step
+```
+
+`main` is the stable branch; `nightly` tracks the latest changes and may be less stable. The web
+UI's **Updates** page shows your current version and checks whether a newer commit exists on your
+selected channel — but applying the update is always done via `./update.sh`, run as the admin, not
+through the web UI. That's intentional: the systemd service account can only read its own code
+(see `deploy/README.md`), so it can't pull or apply updates on its own.
 
 ## API Documentation
 

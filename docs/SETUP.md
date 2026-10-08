@@ -1,5 +1,10 @@
 # Setup Guide
 
+This is the fully-manual, step-by-step walkthrough. For the automated path (recommended —
+handles the venv, dependencies, `.env`, and optionally installs JellyStream as a systemd
+service for you), run `./setup.sh` instead and see the main [README](../README.md) or
+[INSTALL.md](../INSTALL.md).
+
 ## Prerequisites
 
 - Python 3.11 or higher
@@ -108,23 +113,21 @@ docker-compose down
 
 ### Using Docker Directly
 
-1. Build the image:
+JellyStream builds as **two** images — API and PHP frontend — not a single combined one, so
+`docker build -t jellystream .` won't work as-is. Use `docker-compose` (above) unless you have
+a specific reason to run the containers individually:
 
 ```bash
-docker build -t jellystream .
-```
-
-2. Run the container:
-
-```bash
+docker build -t jellystream-api -f docker/Dockerfile.api .
 docker run -d \
   -p 8000:8000 \
   -v $(pwd)/data:/app/data \
-  -e JELLYFIN_URL=http://your-jellyfin-server:8096 \
-  -e JELLYFIN_API_KEY=your_api_key \
-  --name jellystream \
-  jellystream
+  -v $(pwd)/.env:/app/.env:ro \
+  --name jellystream-api \
+  jellystream-api
 ```
+
+See [docs/DOCKER.md](DOCKER.md) for the frontend container and the full two-container setup.
 
 ## Verification
 
@@ -179,3 +182,5 @@ PORT=8001
 - Assign Jellyfin libraries and genre filters to the channel
 - Let JellyStream auto-generate a 7-day schedule
 - Register the M3U and XMLTV URLs with Jellyfin Live TV
+- To update later (git installs only): `./update.sh` — see the **Updates** page in the web UI
+  or [deploy/README.md](../deploy/README.md)

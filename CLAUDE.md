@@ -139,6 +139,10 @@ jellystream/
 - bug_interval_seconds: Integer default=0  # 0 = always visible
 - bug_duration_seconds: Integer default=10
 - bug_scale_percent: Integer default=12  # width as % of video width
+- bug_max_height_percent: Integer default=30  # upper bound on height, as % of video height
+- bug_opacity_percent: Integer default=100  # 1-100, 100 = fully opaque
+- logo_image_path: String(500) nullable  # dedicated channel logo image (guide icon)
+- logo_use_bug_image: Boolean default=False  # if true, the on-screen graphic image IS the logo
 - created_at, updated_at: DateTime server_default
 ```
 
@@ -240,6 +244,12 @@ See [docs/API.md](docs/API.md) for comprehensive documentation.
 - `POST /api/channels/{id}/bug-image` — Upload/replace the on-screen graphic image (multipart `file`; ≤5MB,
   png/jpg/jpeg/gif/webp/bmp; rejected with 400 unless ffprobe confirms it decodes with real width/height)
 - `DELETE /api/channels/{id}/bug-image` — Remove the on-screen graphic image
+- `GET /api/channels/{id}/logo-image` — Serve the channel's *effective* logo (resolves
+  `logo_use_bug_image` server-side: the bug image if true, else `logo_image_path`); used by both
+  the UI preview and the M3U `tvg-logo`/XMLTV `<icon>` URLs
+- `POST /api/channels/{id}/logo-image` — Upload/replace a dedicated channel logo (same validation
+  as bug-image). Saved even while `logo_use_bug_image` is true — just not served until it's false
+- `DELETE /api/channels/{id}/logo-image` — Remove the dedicated logo (never touches the bug image)
 
 ### Schedules (`app/api/schedules.py`)
 - `GET /api/schedules/channel/{channel_id}` — Get schedule (default: -3h to +7d)
@@ -326,14 +336,20 @@ class CreateChannelRequest(BaseModel):
     bug_position: str = "bottom-right"
     bug_interval_seconds: int = 0       # 0 = always visible
     bug_duration_seconds: int = 10
-    bug_scale_percent: int = 12
+    bug_scale_percent: int = 12         # width, as % of video width
+    bug_max_height_percent: int = 30    # upper bound on height, as % of video height
+    bug_opacity_percent: int = 100      # 1-100, 100 = fully opaque
+    # Channel logo — image uploaded separately via POST .../logo-image.
+    logo_use_bug_image: bool = False    # if true, the bug image IS the logo too
 
 class UpdateChannelRequest(BaseModel):
     # all fields optional — omit to leave unchanged
     name, description, channel_number, enabled, channel_type, schedule_type
     libraries, genre_filters, collection_sources: Optional[...] = None
     transcode_max_height, transcode_preset, hwaccel, hwaccel_device: Optional[...] = None
-    bug_enabled, bug_position, bug_interval_seconds, bug_duration_seconds, bug_scale_percent: Optional[...] = None
+    bug_enabled, bug_position, bug_interval_seconds, bug_duration_seconds: Optional[...] = None
+    bug_scale_percent, bug_max_height_percent, bug_opacity_percent: Optional[...] = None
+    logo_use_bug_image: Optional[bool] = None
 
 class CreateScheduleEntryRequest(BaseModel):
     channel_id: int
@@ -678,9 +694,8 @@ on elements it may have already destroyed).
   a corrupt file can still be demuxed by its extension and exit 0 with `width=0,height=0`,
   which a bare `returncode == 0` check would wrongly accept
 - `_build_ffmpeg_cmd()` (`stream_proxy.py`) builds a `scale2ref`+`overlay` `-filter_complex`
-  graph when a bug is active, instead of the plain `-vf` chain used otherwise:
-  `[1:v][base]scale2ref=w=iw*{pct}%:h=ow/mdar[wm][basev];[basev][wm]overlay={corner expr}{enable}[vout]`,
-  with an optional `format=nv12,hwupload[vfinal]` tail for hw-encode paths
+  graph when a bug is active, instead of the plain `-vf` chain used otherwise (see Phase 2.7
+  for the current full expression, which adds a height cap and opacity)
 - The bug image is loaded with `-loop 1`; because a looping image input never reaches EOF,
   `-shortest` is mandatory whenever the bug is active — omitting it hangs ffmpeg indefinitely
   past the source's actual length
@@ -717,6 +732,45 @@ on elements it may have already destroyed).
   hardcoded `/home/oarko/jellystream` template values, then health-checks `/health` a few times
   to confirm it actually came up. Declining falls back to the previous command-line flow
   (`./start.sh` / `./start-php.sh` / `./start-lighttpd.sh`), which still works unchanged
+
+### ✅ Phase 2.7 — Channel Logo + Bug Size Cap / Opacity (complete)
+- `Channel` gains `logo_image_path`, `logo_use_bug_image`, `bug_max_height_percent`,
+  `bug_opacity_percent` columns (safe `ALTER TABLE` migrations)
+- **Channel logo** (shown in the Jellyfin/IPTV guide — M3U `tvg-logo`, XMLTV `<icon>` — not on
+  the video): a dedicated upload via `POST`/`GET`/`DELETE /api/channels/{id}/logo-image`
+  (same validation as bug-image), **or** `logo_use_bug_image=true` to reuse the on-screen
+  graphic image as the logo too, one upload serving both purposes. The GET endpoint resolves
+  the effective path server-side (bug image if the flag is set, else the dedicated upload) so
+  `_m3u_line()`/`_xmltv_channel()` in `livetv.py` can always point at the same URL regardless
+  of which source is actually in effect. Toggling the flag off never deletes the dedicated
+  upload — it's just not served while the flag is on, and reappears when it's turned off
+- `app/api/livetv.py` `_channel_logo_url()`: emits the URL only if an effective path is set
+  (mirrors the existing thumbnail pattern — the serving endpoint 404s if the file's since gone
+  missing, rather than this helper checking disk itself)
+- **Bug height cap** (`bug_max_height_percent`, default 30): constrains the on-screen graphic's
+  height independently of `bug_scale_percent`'s width — whichever bound is more restrictive
+  wins, aspect ratio always preserved. Implemented as
+  `scale2ref=w=min(iw*{scale_pct}\,ih*{max_h_pct}*mdar):h=ow/mdar` — **the variable semantics
+  here are the opposite of what the `scale` filter's own docs describe**: empirically verified
+  (four independent real-ffmpeg tests, varying only one dimension at a time) that within this
+  expression `iw`/`ih` are the *reference* stream's (the video's) width/height, `main_w`/`main_h`
+  are the bug image's *own* original width/height, and `mdar` is the bug's own aspect ratio.
+  Confirmed pixel-exact end to end: a 200×600 portrait image at `scale_pct=50`,
+  `max_h_pct=20` against a 1280×720 video correctly capped to 48×144 (not the uncapped
+  640×1920) with the background visible immediately past the capped edge
+- **Bug opacity** (`bug_opacity_percent`, default 100 = fully opaque): below 100, inserts
+  `[wm]format=rgba,colorchannelmixer=aa={opacity}[wmt]` between the scale2ref and the overlay —
+  `format=rgba` guarantees an alpha channel exists even for an opaque source, then
+  `colorchannelmixer` multiplies whatever alpha is already there, so a PNG with its own partial
+  transparency gets proportionally *more* transparent rather than having its alpha overwritten.
+  Verified via raw pixel extraction: 60% opacity red over a blue background produced
+  (152,0,99) against a (153,0,102) exact-blend prediction (the ~1-unit difference is normal
+  libx264 lossy-encode rounding, not a logic error). At `opacity=100` the `colorchannelmixer`
+  stage is skipped entirely — command is byte-for-byte identical to the pre-Phase-2.7 output,
+  confirmed by diffing the generated argv
+- PHP: new "Channel Logo" section in `channel_edit.php` (toggle + dedicated upload/preview/
+  remove, all wired to the endpoints above) and two new fields in "On-Screen Graphic" (Max
+  Height %, Opacity %)
 
 ### 🚧 Planned (Phase 3+)
 - Channel dashboard with "now playing" and "up next"
@@ -862,8 +916,8 @@ python run.py
 ---
 
 *Last Updated: 2026-10-07*
-*Version: 0.8.0*
-*Status: Phase 1 + Collections (1.5) + Collections-as-Channel-Source (2.0) + On-Screen Graphic (2.5) + Self-Update/Service-First Setup (2.6) complete*
+*Version: 0.9.0*
+*Status: Phase 1 + Collections (1.5) + Collections-as-Channel-Source (2.0) + On-Screen Graphic (2.5) + Self-Update/Service-First Setup (2.6) + Channel Logo/Bug Size+Opacity (2.7) complete*
 
 ### Jellyfin BoxSets in Collections
 Jellyfin can return a whole boxset in place of its movies in library listings (its "group movies

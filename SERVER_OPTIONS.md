@@ -6,11 +6,28 @@ JellyStream provides multiple ways to run the PHP frontend, depending on your ne
 
 | Server | Use Case | Performance | Setup Complexity | Command |
 |--------|----------|-------------|------------------|---------|
+| **systemd + Lighttpd** | **Production (recommended)** | ⭐⭐⭐⭐⭐ | ⭐ (automated) | `./setup.sh` |
 | **PHP Built-in** | Development | ⭐⭐ | ⭐ (Easiest) | `./start-php.sh` |
-| **Lighttpd** | Production/Local | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | `./start-lighttpd.sh` |
+| **Lighttpd (manual)** | Production/Local | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | `./start-lighttpd.sh` |
 | **Docker** | Production/Deploy | ⭐⭐⭐⭐⭐ | ⭐⭐ | `docker-compose up -d` |
 | **Apache** | Production | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | See [LIGHTTPD_DEPLOYMENT.md](docs/LIGHTTPD_DEPLOYMENT.md) |
 | **Nginx** | Production | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | See [LIGHTTPD_DEPLOYMENT.md](docs/LIGHTTPD_DEPLOYMENT.md) |
+
+### 0. systemd + Lighttpd (Production, Recommended)
+
+`./setup.sh` now installs, enables, and starts both the API and the Lighttpd frontend as
+systemd services by default — auto-restart on crash, start on boot, no manual service files to
+write. It's offered as a prompt (default yes) right after setup finishes the rest of the
+install; decline it to fall back to any of the manual options below. See
+[deploy/README.md](deploy/README.md) for the full reference, including how to install by hand
+or re-render the unit files after moving the project.
+
+```bash
+./setup.sh   # prompts to install the systemd service; accept it
+systemctl status jellystream-api jellystream-web
+```
+
+---
 
 ## 1. PHP Built-in Server (Development)
 
@@ -200,19 +217,31 @@ python run.py
 
 ### Deployment (VPS/Server)
 
-**Option A: Docker (Recommended)**
+**Option A: systemd via `./setup.sh` (Recommended)**
+
+```bash
+./setup.sh   # accept the systemd install prompt
+```
+
+**Why:** Fully automated — no manual unit files or config to write. Auto-restart on crash,
+starts on boot, lower overhead than Docker, and pairs with `./update.sh` for easy updates.
+See [deploy/README.md](deploy/README.md).
+
+**Option B: Docker**
 
 ```bash
 docker-compose up -d
 ```
 
-**Why:** Easiest deployment. Everything included. Auto-restart. Health checks.
+**Why:** Isolated, consistent environment across machines. Everything included, health checks
+built in. Note: GPU passthrough for hardware transcoding and `./update.sh` aren't wired up for
+the Docker path — it's a separate image per release rather than a git-based update.
 
-**Option B: Lighttpd + SystemD**
+**Option C: Manual systemd / Lighttpd**
 
-Configure as system services. See [docs/LIGHTTPD_DEPLOYMENT.md](docs/LIGHTTPD_DEPLOYMENT.md).
+Hand-configure system services yourself. See [docs/LIGHTTPD_DEPLOYMENT.md](docs/LIGHTTPD_DEPLOYMENT.md).
 
-**Why:** Lower overhead than Docker. Full system integration.
+**Why:** Full control if `./setup.sh`'s automated install doesn't fit your setup.
 
 ---
 
@@ -241,16 +270,17 @@ Configure as system services. See [docs/LIGHTTPD_DEPLOYMENT.md](docs/LIGHTTPD_DE
 → Use `./start-lighttpd.sh`
 
 **I'm deploying to a server:**
-→ Use Docker (`docker-compose up -d`)
+→ Run `./setup.sh` and accept the systemd install (recommended), or use Docker if you want
+isolated/portable containers instead
 
 **I have existing Apache/Nginx:**
 → See deployment docs
 
 **I want maximum performance:**
-→ Use Lighttpd or Nginx
+→ Use Lighttpd (via `./setup.sh`'s systemd install) or Nginx
 
-**I want easiest deployment:**
-→ Use Docker
+**I want easiest automated deployment:**
+→ Use `./setup.sh` (installs the systemd service for you)
 
 ---
 
@@ -278,8 +308,8 @@ All servers:
 ## Summary
 
 - **Development**: PHP built-in server (`./start-php.sh`)
-- **Production**: Lighttpd (`./start-lighttpd.sh`) or Docker
-- **Deployment**: Docker Compose (recommended)
+- **Production**: `./setup.sh` (installs systemd + Lighttpd automatically) — or Docker if you
+  prefer containers
 - **Enterprise**: Nginx/Apache with reverse proxy
 
 Choose based on your needs. Start simple (PHP built-in), scale up as needed!

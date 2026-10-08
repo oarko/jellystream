@@ -44,6 +44,7 @@ def _validate_transcode_settings(preset: str = None, hwaccel: str = None) -> Non
 def _validate_bug_settings(
     position: str = None, interval_seconds: int = None,
     duration_seconds: int = None, scale_percent: int = None,
+    max_height_percent: int = None, opacity_percent: int = None,
 ) -> None:
     if position is not None and position not in VALID_BUG_POSITIONS:
         raise HTTPException(
@@ -56,6 +57,10 @@ def _validate_bug_settings(
         raise HTTPException(status_code=400, detail="bug_duration_seconds must be > 0")
     if scale_percent is not None and not (1 <= scale_percent <= 100):
         raise HTTPException(status_code=400, detail="bug_scale_percent must be between 1 and 100")
+    if max_height_percent is not None and not (1 <= max_height_percent <= 100):
+        raise HTTPException(status_code=400, detail="bug_max_height_percent must be between 1 and 100")
+    if opacity_percent is not None and not (1 <= opacity_percent <= 100):
+        raise HTTPException(status_code=400, detail="bug_opacity_percent must be between 1 and 100")
 
 
 def _channel_to_dict(channel: Channel) -> dict:
@@ -81,6 +86,10 @@ def _channel_to_dict(channel: Channel) -> dict:
         "bug_interval_seconds": channel.bug_interval_seconds,
         "bug_duration_seconds": channel.bug_duration_seconds,
         "bug_scale_percent": channel.bug_scale_percent,
+        "bug_max_height_percent": channel.bug_max_height_percent,
+        "bug_opacity_percent": channel.bug_opacity_percent,
+        "logo_image_path": channel.logo_image_path,
+        "logo_use_bug_image": channel.logo_use_bug_image,
         "created_at": channel.created_at,
         "updated_at": channel.updated_at,
     }
@@ -179,6 +188,7 @@ async def create_channel(data: CreateChannelRequest, db: AsyncSession = Depends(
     _validate_bug_settings(
         data.bug_position, data.bug_interval_seconds,
         data.bug_duration_seconds, data.bug_scale_percent,
+        data.bug_max_height_percent, data.bug_opacity_percent,
     )
 
     channel = Channel(
@@ -196,6 +206,9 @@ async def create_channel(data: CreateChannelRequest, db: AsyncSession = Depends(
         bug_interval_seconds=data.bug_interval_seconds,
         bug_duration_seconds=data.bug_duration_seconds,
         bug_scale_percent=data.bug_scale_percent,
+        bug_max_height_percent=data.bug_max_height_percent,
+        bug_opacity_percent=data.bug_opacity_percent,
+        logo_use_bug_image=data.logo_use_bug_image,
     )
     db.add(channel)
     await db.flush()  # Assign ID without committing
@@ -275,6 +288,7 @@ async def update_channel(
     _validate_bug_settings(
         data.bug_position, data.bug_interval_seconds,
         data.bug_duration_seconds, data.bug_scale_percent,
+        data.bug_max_height_percent, data.bug_opacity_percent,
     )
 
     if data.name is not None:
@@ -311,6 +325,12 @@ async def update_channel(
         channel.bug_duration_seconds = data.bug_duration_seconds
     if data.bug_scale_percent is not None:
         channel.bug_scale_percent = data.bug_scale_percent
+    if data.bug_max_height_percent is not None:
+        channel.bug_max_height_percent = data.bug_max_height_percent
+    if data.bug_opacity_percent is not None:
+        channel.bug_opacity_percent = data.bug_opacity_percent
+    if data.logo_use_bug_image is not None:
+        channel.logo_use_bug_image = data.logo_use_bug_image
 
     if data.libraries is not None:
         await db.execute(
@@ -375,13 +395,15 @@ async def delete_channel(channel_id: int, db: AsyncSession = Depends(get_db)):
 
     name = channel.name
     bug_path = channel.bug_image_path
+    logo_path = channel.logo_image_path
     await db.delete(channel)
     await db.commit()
-    if bug_path and os.path.isfile(bug_path):
-        try:
-            os.remove(bug_path)
-        except OSError as exc:
-            logger.warning(f"delete_channel: could not remove bug image {bug_path!r}: {exc}")
+    for path, label in ((bug_path, "bug image"), (logo_path, "logo image")):
+        if path and os.path.isfile(path):
+            try:
+                os.remove(path)
+            except OSError as exc:
+                logger.warning(f"delete_channel: could not remove {label} {path!r}: {exc}")
     logger.info(f"delete_channel: deleted channel '{name}' (id={channel_id})")
     return {"message": "Channel deleted successfully"}
 
@@ -516,6 +538,100 @@ async def delete_bug_image(channel_id: int, db: AsyncSession = Depends(get_db)):
     channel.bug_image_path = None
     await db.commit()
     logger.info(f"delete_bug_image: channel {channel_id} — image removed")
+    return {"message": "Image removed"}
+
+
+# ─── POST /api/channels/{channel_id}/logo-image ──────────────────────────────
+# The channel logo shown in the Jellyfin/IPTV guide (M3U tvg-logo, XMLTV
+# <icon>) — a separate image from the on-screen graphic by default, but
+# logo_use_bug_image lets a channel reuse the same upload for both instead
+# of requiring two. Validation mirrors the bug-image endpoints above exactly
+# (same size/type/decode checks) since the requirements are identical.
+
+@router.get("/{channel_id}/logo-image")
+async def get_logo_image(channel_id: int, db: AsyncSession = Depends(get_db)):
+    """Serve the channel's effective logo image (for preview in the UI and for the M3U/XMLTV guide)."""
+    logger.debug(f"get_logo_image: channel_id={channel_id}")
+    result = await db.execute(select(Channel).where(Channel.id == channel_id))
+    channel = result.scalar_one_or_none()
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    effective_path = channel.bug_image_path if channel.logo_use_bug_image else channel.logo_image_path
+    if not effective_path or not os.path.isfile(effective_path):
+        raise HTTPException(status_code=404, detail="No logo image available")
+    ext = os.path.splitext(effective_path)[1].lower()
+    media_type = _BUG_IMAGE_MEDIA_TYPES.get(ext, "application/octet-stream")
+    return FileResponse(effective_path, media_type=media_type)
+
+
+@router.post("/{channel_id}/logo-image")
+async def upload_logo_image(
+    channel_id: int,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload (or replace) a dedicated channel logo image."""
+    logger.debug(f"upload_logo_image: channel_id={channel_id}, filename={file.filename!r}")
+    result = await db.execute(select(Channel).where(Channel.id == channel_id))
+    channel = result.scalar_one_or_none()
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found")
+
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in _BUG_IMAGE_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{ext}'. Allowed: {sorted(_BUG_IMAGE_EXTENSIONS)}",
+        )
+
+    data = await file.read(_BUG_IMAGE_MAX_BYTES + 1)
+    if len(data) > _BUG_IMAGE_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="Image must be 5MB or smaller")
+    if not data:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    os.makedirs(settings.LOGOS_PATH, exist_ok=True)
+    tmp_path = os.path.join(settings.LOGOS_PATH, f".channel_{channel_id}_logo_upload{ext}")
+    with open(tmp_path, "wb") as f:
+        f.write(data)
+
+    if not await _probe_is_image(tmp_path):
+        os.remove(tmp_path)
+        logger.warning(f"upload_logo_image: channel {channel_id} — upload did not decode as an image")
+        raise HTTPException(status_code=400, detail="That file doesn't look like a valid image")
+
+    final_path = os.path.join(settings.LOGOS_PATH, f"channel_{channel_id}_logo{ext}")
+    old_path = channel.logo_image_path
+    os.replace(tmp_path, final_path)
+    if old_path and old_path != final_path and os.path.isfile(old_path):
+        try:
+            os.remove(old_path)
+        except OSError:
+            pass
+
+    channel.logo_image_path = final_path
+    await db.commit()
+    logger.info(f"upload_logo_image: channel {channel_id} — saved to {final_path!r}")
+    return {"message": "Image uploaded", "logo_image_path": final_path}
+
+
+@router.delete("/{channel_id}/logo-image")
+async def delete_logo_image(channel_id: int, db: AsyncSession = Depends(get_db)):
+    """Remove the dedicated channel logo image (and clear the channel's setting)."""
+    logger.debug(f"delete_logo_image: channel_id={channel_id}")
+    result = await db.execute(select(Channel).where(Channel.id == channel_id))
+    channel = result.scalar_one_or_none()
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found")
+
+    if channel.logo_image_path and os.path.isfile(channel.logo_image_path):
+        try:
+            os.remove(channel.logo_image_path)
+        except OSError as exc:
+            logger.warning(f"delete_logo_image: could not remove file: {exc}")
+    channel.logo_image_path = None
+    await db.commit()
+    logger.info(f"delete_logo_image: channel {channel_id} — image removed")
     return {"message": "Image removed"}
 
 

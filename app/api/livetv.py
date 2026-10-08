@@ -8,6 +8,7 @@ FastAPI does not match "all" as an integer channel_id.
 import json
 import os
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,12 +40,31 @@ def _base_url() -> str:
     return f"{host}:{settings.PORT}"
 
 
+def _channel_logo_url(channel: Channel) -> Optional[str]:
+    """
+    URL for this channel's logo, or None if it doesn't have one.
+
+    The effective path (dedicated upload, or the on-screen-graphic image
+    when logo_use_bug_image is set) is resolved by GET /api/channels/{id}/
+    logo-image itself at request time — this just decides whether to emit
+    the URL at all, mirroring how schedule-entry thumbnails are handled
+    below (emit if a path is set; let the serving endpoint 404 if it's
+    since gone missing on disk).
+    """
+    effective_path = channel.bug_image_path if channel.logo_use_bug_image else channel.logo_image_path
+    if not effective_path:
+        return None
+    return f"{_base_url()}/api/channels/{channel.id}/logo-image"
+
+
 def _m3u_line(channel: Channel) -> str:
     ch_num = channel.channel_number or f"100.{channel.id}"
     stream_url = f"{_base_url()}/api/livetv/stream/{channel.id}"
+    logo_url = _channel_logo_url(channel)
+    logo_attr = f' tvg-logo="{logo_url}"' if logo_url else ""
     lines = (
         f'#EXTINF:-1 tvg-id="{channel.id}" tvg-name="{channel.name}" '
-        f'tvg-chno="{ch_num}" group-title="JellyStream",'
+        f'tvg-chno="{ch_num}"{logo_attr} group-title="JellyStream",'
         f'{ch_num} {channel.name}\n'
         f'{stream_url}\n'
     )
@@ -52,9 +72,12 @@ def _m3u_line(channel: Channel) -> str:
 
 
 def _xmltv_channel(channel: Channel) -> str:
+    logo_url = _channel_logo_url(channel)
+    icon_line = f'    <icon src="{logo_url}"/>\n' if logo_url else ""
     return (
         f'  <channel id="{channel.id}">\n'
         f'    <display-name>{channel.name}</display-name>\n'
+        f'{icon_line}'
         f'  </channel>\n'
     )
 

@@ -57,11 +57,32 @@ drive automatic schedule generation.
     "channel_type": "video",
     "schedule_type": "genre_auto",
     "schedule_generated_through": "2026-03-01T02:00:00",
+    "transcode_max_height": 1080,
+    "transcode_preset": "veryfast",
+    "hwaccel": "none",
+    "hwaccel_device": null,
+    "bug_image_path": null,
+    "bug_enabled": false,
+    "bug_position": "bottom-right",
+    "bug_interval_seconds": 0,
+    "bug_duration_seconds": 10,
+    "bug_scale_percent": 12,
+    "bug_max_height_percent": 30,
+    "bug_opacity_percent": 100,
+    "logo_image_path": null,
+    "logo_use_bug_image": false,
     "created_at": "2026-02-01T00:00:00",
     "updated_at": "2026-02-01T00:00:00"
   }
 ]
 ```
+
+`transcode_*`/`hwaccel*` control the ffmpeg encode for this channel (see "Live TV" below).
+`bug_*` control the on-screen graphic overlay; `bug_image_path` is set by uploading an image
+(see "Channel on-screen graphic" below), not by `POST`/`PUT /api/channels/`.
+`logo_*` control the channel logo shown in the Jellyfin/IPTV guide (M3U `tvg-logo`, XMLTV
+`<icon>`) — see "Channel logo" below. When `logo_use_bug_image` is `true`, the on-screen
+graphic image is used as the logo too and `logo_image_path` is ignored (but not deleted).
 
 ### Get channel
 
@@ -117,6 +138,41 @@ of the two must be provided.
 `content_type` in genre filters: `"movie"`, `"episode"`, or `"both"`.
 `filter_type` in genre filters: `"include"` fetches matching content; `"exclude"` removes matching items from the pool after fetching.
 
+Transcode and on-screen-graphic settings may also be set at creation (all optional, shown with
+their defaults):
+
+```json
+{
+  "transcode_max_height": 1080,
+  "transcode_preset": "veryfast",
+  "hwaccel": "none",
+  "hwaccel_device": null,
+  "bug_enabled": false,
+  "bug_position": "bottom-right",
+  "bug_interval_seconds": 0,
+  "bug_duration_seconds": 10,
+  "bug_scale_percent": 12,
+  "bug_max_height_percent": 30,
+  "bug_opacity_percent": 100,
+  "logo_use_bug_image": false
+}
+```
+
+`transcode_max_height`: `0` or `null` = no downscale. `transcode_preset`: one of `ultrafast`,
+`superfast`, `veryfast`, `faster`, `fast`, `medium` (ignored by the `vaapi` hwaccel path).
+`hwaccel`: `"none"` | `"vaapi"` | `"qsv"` | `"nvenc"`. `bug_position`: `"top-left"` |
+`"top-right"` | `"bottom-left"` | `"bottom-right"` | `"center"`. `bug_interval_seconds`: `0`
+means always visible; otherwise the graphic appears for `bug_duration_seconds` every
+`bug_interval_seconds`. `bug_scale_percent` caps the graphic's *width* as a % of the video's
+width; `bug_max_height_percent` independently caps its *height* as a % of the video's height —
+whichever bound is more restrictive wins, aspect ratio is always preserved. `bug_opacity_percent`
+(1-100, 100 = fully opaque) blends the graphic into the video; below 100 it's multiplied into
+the image's own alpha channel (if any), so a PNG with partial transparency gets proportionally
+more transparent rather than having its alpha overridden. The image itself is uploaded
+separately — see "Channel on-screen graphic" below. `logo_use_bug_image`: when `true`, this
+same image is also used as the channel logo (see "Channel logo" below) instead of a separate
+upload.
+
 Genre filters apply equally to library items and collection items. Collection items with
 no stored genre metadata pass through include filters (they were manually curated).
 
@@ -165,15 +221,26 @@ Registers JellyStream's global M3U and XMLTV endpoints as a TunerHost and
 ListingProvider in Jellyfin. Any existing registrations on this channel are
 cleaned up first to prevent duplicates.
 
-**Request body:**
+**Request body:** (only `public_url` is required; the rest default as shown)
 ```json
 {
-  "public_url": "http://192.168.1.100:8000"
+  "public_url": "http://192.168.1.100:8000",
+  "tuner_count": 1,
+  "allow_hw_transcoding": false,
+  "allow_fmp4_transcoding": false,
+  "allow_stream_sharing": true,
+  "enable_stream_looping": true,
+  "fallback_max_bitrate": 0,
+  "ignore_dts": false,
+  "read_at_native_framerate": false
 }
 ```
 
 `public_url` must be a network-accessible address that Jellyfin can reach.
 Using `localhost` will cause Jellyfin's registration to fail.
+`tuner_count`: max simultaneous streams Jellyfin will open against this tuner (`0` = unlimited —
+JellyStream's shared per-channel pipeline means multiple Jellyfin clients don't each start a
+new ffmpeg process anyway). `fallback_max_bitrate`: `0` = no limit.
 
 **Response:**
 ```json
@@ -189,6 +256,68 @@ Using `localhost` will cause Jellyfin's registration to fail.
 **DELETE** `/api/channels/{id}/register-livetv`
 
 Removes the TunerHost and ListingProvider registrations from Jellyfin.
+
+### Channel on-screen graphic
+
+Upload, preview, or remove the image used for this channel's "bug" overlay (see `bug_*`
+fields above for position/timing/size). Uploading sets `bug_image_path`; whether it's actually
+shown on stream is still gated by `bug_enabled`.
+
+**POST** `/api/channels/{id}/bug-image`
+
+Multipart form upload, field name `file`. Accepts `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`,
+`.bmp`, max 5MB. Rejected with `400` unless `ffprobe` confirms the file decodes as a real image
+(non-zero width/height) — a corrupt upload can never silently break playback later.
+
+```json
+{ "message": "Image uploaded", "bug_image_path": "./data/logos/channel_1_bug.png" }
+```
+
+**GET** `/api/channels/{id}/bug-image`
+
+Serves the uploaded image directly (for use in an `<img>` tag). `404` if none is uploaded.
+
+**DELETE** `/api/channels/{id}/bug-image`
+
+Removes the file from disk and clears `bug_image_path`.
+
+```json
+{ "message": "Image removed" }
+```
+
+### Channel logo
+
+Upload, preview, or remove the channel's logo — shown in the Jellyfin/IPTV guide (M3U
+`tvg-logo`, XMLTV `<icon>`), not on the video itself. Independent of the on-screen graphic
+above by default, but `logo_use_bug_image=true` (set via `PUT /api/channels/{id}`) makes the
+bug image double as the logo instead of requiring a second upload.
+
+**GET** `/api/channels/{id}/logo-image`
+
+Serves the channel's *effective* logo image — resolved server-side: the bug image if
+`logo_use_bug_image` is `true`, otherwise the dedicated upload. This is the same URL used in
+the M3U/XMLTV output, so it always reflects whichever source is actually active. `404` if
+neither is set (or the effective file is missing from disk).
+
+**POST** `/api/channels/{id}/logo-image`
+
+Multipart form upload, field name `file`. Same validation as the bug-image upload (type/size/
+real-image checks). Uploading here always saves to `logo_image_path`, even while
+`logo_use_bug_image` is `true` — it just won't be served (by the GET above, or in the guide)
+until the flag is turned off.
+
+```json
+{ "message": "Image uploaded", "logo_image_path": "./data/logos/channel_1_logo.png" }
+```
+
+**DELETE** `/api/channels/{id}/logo-image`
+
+Removes the dedicated logo file and clears `logo_image_path`. Never touches the bug image,
+even if `logo_use_bug_image` is currently `true`.
+
+```json
+{ "message": "Image removed" }
+```
 
 ---
 
@@ -476,11 +605,13 @@ Proxies the image bytes from Jellyfin, hiding the API key from the browser.
 
 ```m3u
 #EXTM3U
-#EXTINF:-1 tvg-id="1" tvg-name="Action Movies" tvg-chno="100.1" group-title="JellyStream",100.1 Action Movies
+#EXTINF:-1 tvg-id="1" tvg-name="Action Movies" tvg-chno="100.1" tvg-logo="http://192.168.1.100:8000/api/channels/1/logo-image" group-title="JellyStream",100.1 Action Movies
 http://192.168.1.100:8000/api/livetv/stream/1
 ```
 
-Uses `tvg-chno` (not `channel-number`) which Jellyfin reads for channel numbering.
+Uses `tvg-chno` (not `channel-number`) which Jellyfin reads for channel numbering. `tvg-logo`
+is only present when the channel has an effective logo set (dedicated upload, or
+`logo_use_bug_image`) — see "Channel logo" above.
 
 ### M3U playlist — single channel
 
@@ -498,6 +629,7 @@ EPG window: 3 hours back → 7 days forward. Enriched with sidecar metadata when
 <tv generator-info-name="JellyStream">
   <channel id="1">
     <display-name>Action Movies</display-name>
+    <icon src="http://192.168.1.100:8000/api/channels/1/logo-image"/>
   </channel>
   <programme channel="1" start="20260222190000 +0000" stop="20260222211600 +0000">
     <title>The Matrix</title>
@@ -535,29 +667,36 @@ Jellyfin probes streams this way before opening them.
 
 **GET** `/api/livetv/stream/{channel_id}`
 
-Proxies the current schedule item through ffmpeg at the correct time offset so
-the viewer always joins mid-programme — just like real broadcast TV.
+Attaches the caller to this channel's shared live MPEG-TS stream, joining mid-programme at the
+correct time offset — just like real broadcast TV. **One ffmpeg pipeline is shared per
+channel**, not one per request: the first viewer starts it, every later viewer (another device,
+Jellyfin re-probing, a browser tab) attaches to the same running stream instead of spawning a
+second ffmpeg. The pipeline keeps running for a grace period after the last viewer disconnects,
+so a brief reconnect doesn't restart anything. See `app/services/stream_proxy.py` /
+`CLAUDE.md` for the full gapless-boundary and hwaccel-fallback design.
 
-1. Finds the `ScheduleEntry` spanning `now` (`start_time ≤ now < end_time`)
-2. Calculates `offset = now − start_time` in seconds
-3. Prefers direct file access (`file_path`) for near-instant seek; falls back to Jellyfin HTTP stream
-4. Probes audio tracks with `ffprobe` and selects the track matching `PREFERRED_AUDIO_LANGUAGE` (falls back to first audio track)
-5. Runs:
-   ```
-   ffmpeg -ss {offset} -probesize 262144 -analyzeduration 1000000 -fflags nobuffer
-          -i {source}
-          -map 0:v:0  -map 0:{audio_index}
-          -vf scale=-2:min(1080,ih) -c:v libx264 -preset veryfast -tune zerolatency
-          -crf 20 -maxrate 8000k -bufsize 4000k
-          -c:a aac -b:a 192k -ac 2
-          -f mpegts -loglevel warning pipe:1
-   ```
-5. Returns `StreamingResponse` (`video/mp2t`) wrapping ffmpeg stdout
+At a high level, per schedule entry:
+1. The first entry is picked by wall clock (`start_time ≤ now < end_time`, joining mid-show at
+   the right offset); later entries always follow playback order, never the clock again
+   (schedule lengths come from stored metadata and can drift from real file duration)
+2. Prefers direct file access (`file_path`) for near-instant seek; falls back to Jellyfin HTTP stream
+3. Probes audio tracks with `ffprobe` and selects the track matching `PREFERRED_AUDIO_LANGUAGE` (falls back to first audio track)
+4. Encodes to H.264/AAC MPEG-TS, scaled to the channel's `transcode_max_height` (or passed
+   through at full resolution if unset). If the channel has `hwaccel` set, tries software-decode
+   + hardware-encode first (hardware decode is deliberately never used — see CLAUDE.md), falling
+   back to full software (`libx264`) on failure
+5. If `bug_enabled` and a valid `bug_image_path` are set, overlays the on-screen graphic via an
+   ffmpeg `filter_complex` instead of the plain filter chain, sized to fit within both
+   `bug_scale_percent` (width) and `bug_max_height_percent` (height) — whichever is more
+   restrictive wins, aspect ratio preserved — and blended at `bug_opacity_percent`
+6. Every segment after the first gets a continuous `-output_ts_offset` so MPEG-TS timestamps
+   never reset at channel-item boundaries (a reset breaks Jellyfin Live TV and most ffmpeg-based
+   players)
 
 **Response headers:**
 - `X-Channel-Id` — channel ID
-- `X-Entry-Title` — ASCII-sanitised title
-- `X-Offset-Seconds` — seek offset applied
+- `X-Entry-Title` — ASCII-sanitised title (non-ASCII replaced with `?` — Starlette headers are latin-1)
+- `X-Offset-Seconds` — seek offset applied to the first segment this viewer joined on
 
 **Errors:**
 - `404` — nothing scheduled right now
@@ -622,6 +761,70 @@ To force an immediate re-download:
 
 ---
 
+## System / Updates  `/api/system/`
+
+All endpoints here are read-only except the channel-preference write. Applying an update is
+always done via `./update.sh`, run by the admin — not through the API — because the systemd
+service account's own code tree is intentionally read-only (see `deploy/README.md`).
+
+### Version info
+
+**GET** `/api/system/version`
+
+```json
+{
+  "git_available": true,
+  "branch": "main",
+  "commit": "3f14483d0a4ac7a789b307b793c98291719e7ae",
+  "commit_short": "3f14483",
+  "commit_date": "2026-09-18T17:36:09-04:00",
+  "dirty": false,
+  "channel": "main"
+}
+```
+
+`dirty: true` means the working tree has uncommitted changes — `./update.sh` will refuse to
+run until they're committed, stashed, or discarded. `git_available: false` (with the other
+fields `null`) means this isn't a git checkout.
+
+### Check for updates
+
+**GET** `/api/system/update-check?channel=main`
+
+Compares local `HEAD` against the tip of the given branch on GitHub, via GitHub's public REST
+API — no local `git fetch` is performed. Omit `channel` to use the saved preference.
+
+```json
+{
+  "channel": "main",
+  "local_commit": "3f14483d0a4ac7a789b307b793c98291719e7ae",
+  "local_commit_short": "3f14483",
+  "latest_commit": "08dedf8302e58c637c64c8823f5327f1968a918",
+  "latest_commit_short": "08dedf8",
+  "latest_commit_date": "2026-09-18T20:18:03Z",
+  "latest_commit_message": "Merge pull request #5 from oarko/nightly",
+  "update_available": true
+}
+```
+
+`400` if `channel` isn't `main` or `nightly`. `503` if GitHub is unreachable or this isn't a
+git checkout.
+
+### Set update channel
+
+**PUT** `/api/system/update-channel`
+
+```json
+{ "channel": "nightly" }
+```
+
+Persists the choice to `.env` (`UPDATE_CHANNEL`) via a targeted single-line edit — never a
+full-file rewrite — and takes effect immediately for subsequent `GET` calls in this process
+(no restart needed). `./update.sh`, run without an explicit branch argument, reads the same
+value.
+
+---
+
 ## Configuration (`.env`)
 
 | Variable | Default | Description |
@@ -636,6 +839,7 @@ To force an immediate re-download:
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `PREFERRED_AUDIO_LANGUAGE` | `eng` | ISO 639-2 code for preferred audio track (`eng`, `jpn`, `fre`, …) |
 | `SCHEDULER_ENABLED` | `true` | Enable APScheduler background jobs |
+| `UPDATE_CHANNEL` | `main` | Branch `./update.sh` pulls and the web UI's update-check compares against. `main` (stable) or `nightly` (latest). Also settable via `PUT /api/system/update-channel`. |
 
 ---
 

@@ -79,6 +79,10 @@ async def init_db():
         "ALTER TABLE channels ADD COLUMN bug_interval_seconds INTEGER DEFAULT 0",
         "ALTER TABLE channels ADD COLUMN bug_duration_seconds INTEGER DEFAULT 10",
         "ALTER TABLE channels ADD COLUMN bug_scale_percent INTEGER DEFAULT 12",
+        "ALTER TABLE channels ADD COLUMN bug_max_height_percent INTEGER DEFAULT 30",
+        "ALTER TABLE channels ADD COLUMN bug_opacity_percent INTEGER DEFAULT 100",
+        "ALTER TABLE channels ADD COLUMN logo_image_path VARCHAR(500)",
+        "ALTER TABLE channels ADD COLUMN logo_use_bug_image BOOLEAN DEFAULT 0",
     ]
     for stmt in _migrations:
         try:

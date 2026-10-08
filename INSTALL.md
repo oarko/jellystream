@@ -18,16 +18,24 @@ chmod +x setup.sh
 The script will:
 1. ✅ Detect your operating system
 2. ✅ Check Python version (3.11+ required)
-3. ✅ Install `python3-venv` on Debian/Ubuntu if needed
+3. ✅ Install `python3-venv` and `ffmpeg` on Debian/Ubuntu if needed
 4. ✅ Create a virtual environment
 5. ✅ Install all dependencies
 6. ✅ Create `.env` configuration file
-7. ✅ Set up data directories
-8. ✅ Optionally start the application
+7. ✅ Set up data directories and a dedicated `jellystream` service user
+8. ✅ **Install, enable, and start JellyStream as a systemd service (default — prompts to skip)**
+9. ✅ Optionally run it in the foreground for a quick test (only if you skipped the service install)
 
 ### Running After Installation
 
-Use the quick start script:
+If you accepted the systemd install, JellyStream is already running — check with:
+
+```bash
+systemctl status jellystream-api jellystream-web
+journalctl -u jellystream-api -f    # live-tail the API
+```
+
+If you skipped it (or want a one-off manual run), use the quick start script:
 
 ```bash
 ./start.sh
@@ -39,6 +47,9 @@ Or manually:
 source venv/bin/activate
 python run.py
 ```
+
+See [deploy/README.md](deploy/README.md) for the full systemd reference — installing by hand,
+changing the run-as user, or re-rendering the unit files after moving the project.
 
 ## Manual Setup
 
@@ -216,9 +227,22 @@ After installation, verify everything works:
    pytest
    ```
 
+## Updating
+
+If you installed via `git clone` (not Docker), pull the latest code with:
+
+```bash
+./update.sh            # uses the channel saved in .env (UPDATE_CHANNEL, default: main)
+./update.sh nightly    # switch channel and update in one step
+```
+
+It refuses to run on a dirty working tree, only ever fast-forwards, and restarts the systemd
+services if they're installed. See [deploy/README.md](deploy/README.md) for details, and the
+web UI's **Updates** page for a read-only check of whether a newer commit is available.
+
 ## Next Steps
 
 - Configure Jellyfin connection in `.env`
 - Read the [Setup Guide](docs/SETUP.md)
 - Check the [API Documentation](docs/API.md)
-- Create your first stream!
+- Create your first channel!

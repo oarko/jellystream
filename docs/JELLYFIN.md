@@ -65,16 +65,19 @@ Returns all available Jellyfin libraries.
     {
       "Name": "Movies",
       "CollectionType": "movies",
-      "ItemId": "abc123..."
+      "Id": "abc123..."
     },
     {
       "Name": "TV Shows",
       "CollectionType": "tvshows",
-      "ItemId": "def456..."
+      "Id": "def456..."
     }
   ]
 }
 ```
+
+> **Note:** Jellyfin's `/Users/{id}/Views` endpoint returns the library ID under the key `Id`,
+> not `ItemId`. This has tripped up the PHP frontend before — always read `library['Id']`.
 
 ### Get Genres for a Library
 
@@ -83,7 +86,7 @@ Returns all available Jellyfin libraries.
 Returns all genres present in a library. Used when configuring genre filters for a channel.
 
 **Parameters:**
-- `library_id`: The library ID (`ItemId`) from the libraries endpoint
+- `library_id`: The library ID (`Id`) from the libraries endpoint
 
 **Example Response:**
 ```json
@@ -99,7 +102,7 @@ Returns all genres present in a library. Used when configuring genre filters for
 Returns items from a library or parent item (series, season, etc.).
 
 **Parameters:**
-- `parent_id`: The ID of the parent item (library `ItemId`, series ID, or season ID)
+- `parent_id`: The ID of the parent item (library `Id`, series ID, or season ID)
 
 **Example Response:**
 ```json

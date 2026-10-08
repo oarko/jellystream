@@ -358,6 +358,8 @@ $public_url_is_local = in_array(
         $bug_interval = $channel['bug_interval_seconds'] ?? 0;
         $bug_duration = $channel['bug_duration_seconds'] ?? 10;
         $bug_scale    = $channel['bug_scale_percent'] ?? 12;
+        $bug_max_height = $channel['bug_max_height_percent'] ?? 30;
+        $bug_opacity    = $channel['bug_opacity_percent'] ?? 100;
         $has_bug_image = $is_edit && !empty($channel['bug_image_path']);
         $bug_image_url = $has_bug_image
             ? getClientApiBaseUrl() . "/channels/{$channel_id}/bug-image?t=" . time()
@@ -412,6 +414,21 @@ $public_url_is_local = in_array(
             <input type="number" id="ch-bug-scale" value="<?php echo intval($bug_scale); ?>" min="2" max="50">
         </div>
         <div class="form-group">
+            <label>Max Height (% of video height)</label>
+            <input type="number" id="ch-bug-max-height" value="<?php echo intval($bug_max_height); ?>" min="1" max="100">
+            <div class="hint">
+                Caps the graphic's height independently of its width — useful for a tall/narrow
+                image so it can't grow unreasonably large just because its width fits. Whichever
+                limit (width % or this) is more restrictive wins; the image's own proportions are
+                always kept.
+            </div>
+        </div>
+        <div class="form-group">
+            <label>Opacity (%)</label>
+            <input type="number" id="ch-bug-opacity" value="<?php echo intval($bug_opacity); ?>" min="1" max="100">
+            <div class="hint">100 = fully opaque. Lower values make the graphic more transparent.</div>
+        </div>
+        <div class="form-group">
             <label>Appears Every (seconds)</label>
             <input type="number" id="ch-bug-interval" value="<?php echo intval($bug_interval); ?>" min="0" onchange="onBugIntervalChange()">
             <div class="hint">0 = always visible. Otherwise the graphic flashes on periodically.</div>
@@ -420,6 +437,61 @@ $public_url_is_local = in_array(
             <label>Stays Visible For (seconds)</label>
             <input type="number" id="ch-bug-duration" value="<?php echo intval($bug_duration); ?>" min="1">
         </div>
+
+        <!-- Channel Logo (guide/tuner icon — separate from the on-screen graphic above) -->
+        <h2 style="margin-top:24px;">Channel Logo</h2>
+        <div class="hint" style="margin-bottom:12px;">
+            Shown in the Jellyfin/IPTV guide (channel icon), not on the video itself.
+        </div>
+        <?php
+        $logo_use_bug = !empty($channel['logo_use_bug_image']);
+        $has_logo_image = $is_edit && !empty($channel['logo_image_path']);
+        // The resolving endpoint always serves whichever image is actually in effect
+        // (the bug image when the toggle is on, the dedicated upload otherwise) — one
+        // preview element, no need to branch the URL in PHP.
+        $effective_logo_url = $is_edit
+            ? getClientApiBaseUrl() . "/channels/{$channel_id}/logo-image?t=" . time()
+            : '';
+        $has_effective_logo = $is_edit && ($logo_use_bug ? $has_bug_image : $has_logo_image);
+        ?>
+        <div class="toggle-row">
+            <label class="switch">
+                <input type="checkbox" id="ch-logo-use-bug" <?php echo $logo_use_bug ? 'checked' : ''; ?> onchange="onLogoUseBugChange()">
+                <span class="slider"></span>
+            </label>
+            <label for="ch-logo-use-bug">Use the on-screen graphic image as the channel logo too</label>
+        </div>
+
+        <?php if ($is_edit): ?>
+        <div class="form-group">
+            <label>Effective Logo</label>
+            <div style="display:flex;align-items:center;gap:14px;">
+                <img id="logo-image-preview"
+                     src="<?php echo htmlspecialchars($effective_logo_url); ?>"
+                     style="<?php echo $has_effective_logo ? '' : 'display:none;'; ?>max-height:60px;max-width:160px;background:#1a1a1a;border:1px solid #333;border-radius:4px;padding:4px;">
+                <span id="logo-image-none" style="<?php echo $has_effective_logo ? 'display:none;' : ''; ?>color:#888;font-size:13px;">No logo set</span>
+            </div>
+        </div>
+        <div class="form-group" id="ch-logo-upload-group">
+            <label>Dedicated Logo Upload</label>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                <input type="file" id="logo-image-file" accept=".png,.jpg,.jpeg,.gif,.webp,.bmp" style="display:none;" onchange="uploadLogoImage()">
+                <button class="btn btn-secondary" type="button" onclick="document.getElementById('logo-image-file').click();">Upload Image</button>
+                <button class="btn" type="button" id="logo-image-remove-btn"
+                        style="<?php echo $has_logo_image ? '' : 'display:none;'; ?>background:#c0392b;color:#fff;"
+                        onclick="removeLogoImage()">Remove</button>
+            </div>
+            <div class="hint" id="ch-logo-upload-hint">
+                PNG, JPG, GIF, WEBP, or BMP — 5MB max.
+                <span id="ch-logo-upload-disabled-note" <?php echo $logo_use_bug ? '' : 'hidden'; ?>>
+                    Saved here but not shown above while "use on-screen graphic" is checked.
+                </span>
+            </div>
+            <div id="logo-image-status" style="font-size:13px;margin-top:4px;"></div>
+        </div>
+        <?php else: ?>
+        <div class="hint" style="margin-bottom:12px;">Save the channel first, then come back here to upload a logo.</div>
+        <?php endif; ?>
 
         <?php if ($is_edit): ?>
         <!-- Schedule actions -->
@@ -646,6 +718,78 @@ async function removeBugImage() {
             document.getElementById('bug-image-preview').style.display = 'none';
             document.getElementById('bug-image-none').style.display = '';
             document.getElementById('bug-image-remove-btn').style.display = 'none';
+            statusEl.textContent = 'Image removed.';
+            statusEl.style.color = '#81c784';
+        } else {
+            statusEl.textContent = data.detail || 'Remove failed.';
+            statusEl.style.color = '#e57373';
+        }
+    } catch (e) {
+        statusEl.textContent = 'Network error: ' + e.message;
+        statusEl.style.color = '#e57373';
+    }
+}
+
+// ── Channel logo ──────────────────────────────────────────────────────────────
+function onLogoUseBugChange() {
+    const useBug = document.getElementById('ch-logo-use-bug').checked;
+    document.getElementById('ch-logo-upload-disabled-note').hidden = !useBug;
+    // The "Effective Logo" preview above reflects what's saved in the
+    // database, not this unsaved checkbox — it updates after Save Changes
+    // reloads the page, same as the rest of this form.
+}
+
+async function uploadLogoImage() {
+    const input = document.getElementById('logo-image-file');
+    const file  = input.files[0];
+    if (!file) return;
+
+    const statusEl = document.getElementById('logo-image-status');
+    statusEl.textContent = 'Uploading…';
+    statusEl.style.color = '#888';
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const resp = await fetch(`${API_BASE}/channels/${CHANNEL_ID}/logo-image`, {
+            method: 'POST',
+            body: formData,
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            document.getElementById('logo-image-remove-btn').style.display = '';
+            if (!document.getElementById('ch-logo-use-bug').checked) {
+                const preview = document.getElementById('logo-image-preview');
+                preview.src = `${API_BASE}/channels/${CHANNEL_ID}/logo-image?t=${Date.now()}`;
+                preview.style.display = '';
+                document.getElementById('logo-image-none').style.display = 'none';
+            }
+            statusEl.textContent = 'Image uploaded.';
+            statusEl.style.color = '#81c784';
+        } else {
+            statusEl.textContent = data.detail || 'Upload failed.';
+            statusEl.style.color = '#e57373';
+        }
+    } catch (e) {
+        statusEl.textContent = 'Network error: ' + e.message;
+        statusEl.style.color = '#e57373';
+    }
+    input.value = '';
+}
+
+async function removeLogoImage() {
+    if (!confirm('Remove the dedicated channel logo image?')) return;
+    const statusEl = document.getElementById('logo-image-status');
+    try {
+        const resp = await fetch(`${API_BASE}/channels/${CHANNEL_ID}/logo-image`, { method: 'DELETE' });
+        const data = await resp.json();
+        if (resp.ok) {
+            document.getElementById('logo-image-remove-btn').style.display = 'none';
+            if (!document.getElementById('ch-logo-use-bug').checked) {
+                document.getElementById('logo-image-preview').style.display = 'none';
+                document.getElementById('logo-image-none').style.display = '';
+            }
             statusEl.textContent = 'Image removed.';
             statusEl.style.color = '#81c784';
         } else {
@@ -952,6 +1096,9 @@ async function saveChannel() {
         bug_interval_seconds: parseInt(document.getElementById('ch-bug-interval').value, 10) || 0,
         bug_duration_seconds: parseInt(document.getElementById('ch-bug-duration').value, 10) || 10,
         bug_scale_percent:    parseInt(document.getElementById('ch-bug-scale').value, 10) || 12,
+        bug_max_height_percent: parseInt(document.getElementById('ch-bug-max-height').value, 10) || 30,
+        bug_opacity_percent:    parseInt(document.getElementById('ch-bug-opacity').value, 10) || 100,
+        logo_use_bug_image:     document.getElementById('ch-logo-use-bug').checked,
     };
 
     const url    = IS_EDIT ? `${API_BASE}/channels/${CHANNEL_ID}` : `${API_BASE}/channels/`;

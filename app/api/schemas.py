@@ -48,7 +48,14 @@ class CreateChannelRequest(BaseModel):
     bug_position: str = "bottom-right"  # top-left|top-right|bottom-left|bottom-right|center
     bug_interval_seconds: int = 0       # 0 = always visible while bug_enabled
     bug_duration_seconds: int = 10
-    bug_scale_percent: int = 12
+    bug_scale_percent: int = 12         # width, as % of video width
+    bug_max_height_percent: int = 30    # upper bound on height, as % of video height
+    bug_opacity_percent: int = 100      # 100 = fully opaque
+    # Channel logo (shown in the Jellyfin/IPTV guide — tvg-logo / XMLTV <icon>).
+    # Uploaded separately via POST /api/channels/{id}/logo-image. When
+    # logo_use_bug_image is true, the on-screen graphic image IS the logo and
+    # any separately-uploaded logo_image_path is ignored (but left on disk).
+    logo_use_bug_image: bool = False
 
 
 class UpdateChannelRequest(BaseModel):
@@ -76,6 +83,10 @@ class UpdateChannelRequest(BaseModel):
     bug_interval_seconds: Optional[int] = None
     bug_duration_seconds: Optional[int] = None
     bug_scale_percent: Optional[int] = None
+    bug_max_height_percent: Optional[int] = None
+    bug_opacity_percent: Optional[int] = None
+    # Channel logo — omit to leave unchanged.
+    logo_use_bug_image: Optional[bool] = None
 
 
 # ─── Schedule Schemas ─────────────────────────────────────────────────────────

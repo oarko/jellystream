@@ -7,7 +7,8 @@ This is the PHP-based web interface for JellyStream. It communicates with the Fa
 - ✅ **Setup Wizard** - Easy configuration interface
 - ✅ **API Integration** - Communicates with FastAPI backend
 - ✅ **Direct Database Access** - Can query SQLite directly
-- ✅ **Stream Management** - Create and manage streams
+- ✅ **Channel & Collection Management** - Create and manage virtual TV channels and curated
+  collections
 - ✅ **Configuration Editor** - Edit .env settings via web UI
 
 ## Requirements
@@ -29,6 +30,14 @@ php -S localhost:8080
 ```
 
 Then visit: http://localhost:8080
+
+### Production (Recommended: systemd via `./setup.sh`)
+
+From the project root, run `./setup.sh` and accept the systemd install prompt — it installs
+and starts both the API and this frontend (via Lighttpd) as systemd services automatically.
+See [deploy/README.md](../../../deploy/README.md) and
+[SERVER_OPTIONS.md](../../../SERVER_OPTIONS.md). The Apache/Nginx options below remain
+available if you need to integrate with existing infrastructure instead.
 
 ### Production (Apache)
 
@@ -87,15 +96,21 @@ Handles all communication with the FastAPI backend:
 ```php
 $api = new ApiClient();
 
-// Get streams
-$response = $api->getStreams();
+// Get channels
+$response = $api->getChannels();
 if ($response['success']) {
-    $streams = $response['data'];
+    $channels = $response['data'];
 }
 
-// Create stream
-$response = $api->createStream('My Channel', 'library-id-123');
+// Create a channel
+$response = $api->createChannel([
+    'name' => 'My Channel',
+    'libraries' => [['library_id' => 'library-id-123', 'library_name' => 'Movies', 'collection_type' => 'movies']],
+]);
 ```
+
+> Note: `getStreams()`/`createStream()` still exist on `ApiClient` for the legacy `/api/streams/`
+> routes, but new code should use the `channels`-based methods above instead.
 
 ### Database Helper (`includes/database.php`)
 
@@ -105,7 +120,7 @@ Direct SQLite database access:
 $db = new Database();
 
 // Query database
-$streams = $db->getStreams();
+$channels = $db->query("SELECT * FROM channels");
 
 // Read/write .env configuration
 $config = $db->getEnvConfig();
@@ -117,12 +132,18 @@ $db->saveEnvConfig($new_config);
 ```
 php/
 ├── config/
-│   └── config.php          # Configuration constants
+│   ├── config.php          # Configuration constants
+│   └── ports.php            # getApiBaseUrl() / getClientApiBaseUrl()
 ├── includes/
-│   ├── api_client.php      # FastAPI client
+│   ├── api_client.php      # FastAPI client (channels, collections, jellyfin, system)
 │   └── database.php        # Database helper
 ├── pages/
-│   └── (additional pages)
+│   ├── channels.php         # Channel management list
+│   ├── channel_edit.php     # Channel editor
+│   ├── collections.php      # Collection list + boxset import
+│   ├── collection_edit.php  # Collection browse/cart editor
+│   └── system.php           # Version info + update-channel + check-for-updates
+├── static/css/style.css     # Shared dark-theme stylesheet
 ├── index.php               # Main dashboard
 ├── setup.php               # Setup wizard
 └── README.md               # This file
@@ -157,10 +178,10 @@ require_once 'config/config.php';
 require_once 'includes/database.php';
 
 $db = new Database();
-$streams = $db->query("SELECT * FROM streams WHERE enabled = 1");
+$channels = $db->query("SELECT * FROM channels WHERE enabled = 1");
 
-foreach ($streams as $stream) {
-    echo $stream['name'] . "\n";
+foreach ($channels as $channel) {
+    echo $channel['name'] . "\n";
 }
 ?>
 ```
@@ -178,7 +199,7 @@ foreach ($streams as $stream) {
 
 3. **Check database**:
    ```bash
-   sqlite3 data/database/jellystream.db "SELECT * FROM streams;"
+   sqlite3 data/database/jellystream.db "SELECT * FROM channels;"
    ```
 
 ## Security Notes

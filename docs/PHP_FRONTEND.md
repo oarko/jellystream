@@ -80,7 +80,7 @@ python run.py
 
 ### 4. Main Dashboard (`php/index.php`)
 - Channel overview
-- Quick links
+- Quick links (channels, collections, updates, M3U/XMLTV, API docs, health)
 - Status indicators
 - Redirects to setup if not configured
 
@@ -89,6 +89,13 @@ python run.py
 - Edit all `.env` settings via forms
 - Organized by category (App, Jellyfin, Logging)
 - Saves configuration without command line
+
+### 6. Channel & Collection Pages (`php/pages/`)
+- `channels.php` / `channel_edit.php` — channel list and editor (libraries, genre filters,
+  collection sources, transcode settings, on-screen graphic, schedule, Live TV registration)
+- `collections.php` / `collection_edit.php` — collection list and browse/cart editor
+  (Jellyfin boxset import, series/season/episode drill-down)
+- `system.php` — current version, update-channel picker, check-for-updates
 
 ## Usage Examples
 
@@ -158,6 +165,14 @@ Then visit: http://localhost:8080
 5. Restart the FastAPI backend
 
 ## Production Deployment
+
+**Recommended:** run `./setup.sh` and accept the systemd install prompt — it installs and
+starts both the API and the PHP frontend (via Lighttpd) as systemd services automatically, no
+manual web-server config needed. See [deploy/README.md](../deploy/README.md) and
+[SERVER_OPTIONS.md](../SERVER_OPTIONS.md).
+
+The options below (Apache, Nginx) remain available if you have existing infrastructure you want
+to integrate with instead.
 
 ### Option A: Apache
 
@@ -285,7 +300,11 @@ jellystream/
 │   │   └── database.php        # SQLite PDO helper
 │   ├── pages/
 │   │   ├── channels.php        # Channel management list
-│   │   └── channel_edit.php    # Channel editor (libraries, genres, schedule)
+│   │   ├── channel_edit.php    # Channel editor (libraries, genres, schedule, transcode, bug)
+│   │   ├── collections.php     # Collection list + boxset import
+│   │   ├── collection_edit.php # Collection browse/cart editor
+│   │   └── system.php          # Version info + update-channel + check-for-updates
+│   ├── static/css/style.css    # Shared dark-theme stylesheet
 │   ├── index.php               # Main dashboard
 │   └── setup.php               # Setup wizard
 └── docs/PHP_FRONTEND.md        # This file

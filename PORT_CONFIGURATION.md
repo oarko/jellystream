@@ -196,24 +196,24 @@ Now access both through port 80:
 
 ## Docker Port Mapping
 
-If using Docker, map ports in `docker-compose.yml`:
+JellyStream's `docker-compose.yml` runs the API and frontend as two separate services; map ports
+for each independently (or via the `API_PORT`/`PHP_PORT` env vars it already reads):
 
 ```yaml
 services:
-  jellystream:
+  api:
     ports:
       - "8000:8000"  # API Backend
+  frontend:
+    ports:
       - "8080:8080"  # PHP Frontend
 ```
 
-Or use custom host ports:
+Or override the host side only, in `.env`:
 
-```yaml
-services:
-  jellystream:
-    ports:
-      - "5000:8000"  # API on host port 5000
-      - "3000:8080"  # PHP on host port 3000
+```env
+API_PORT=5000   # API reachable at host:5000 (container still listens on PORT internally)
+PHP_PORT=3000   # Frontend reachable at host:3000
 ```
 
 ## Environment Variables

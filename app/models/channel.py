@@ -74,8 +74,33 @@ class Channel(Base):
     bug_duration_seconds = Column(Integer, nullable=False, default=10)
 
     # The bug's width as a percentage of the video's width; height follows
-    # automatically from the image's own aspect ratio.
+    # automatically from the image's own aspect ratio (unless capped below).
     bug_scale_percent = Column(Integer, nullable=False, default=12)
+
+    # Upper bound on the bug's height, as a percentage of the video's height —
+    # independent of bug_scale_percent, so a tall/narrow image can't blow up
+    # to an unreasonable height just because its width fits the width cap.
+    # Whichever of the two constraints (width % or height %) is more
+    # restrictive wins; aspect ratio is always preserved.
+    bug_max_height_percent = Column(Integer, nullable=False, default=30)
+
+    # The bug's opacity, 1-100 (100 = fully opaque, as the source image's own
+    # alpha channel — if any — already defines it). Below 100, this is
+    # multiplied into whatever alpha the image already has, so a PNG with
+    # partial transparency still gets proportionally more transparent rather
+    # than having its own alpha overridden.
+    bug_opacity_percent = Column(Integer, nullable=False, default=100)
+
+    # ── Channel logo (shown in the Jellyfin/IPTV guide, not on the video) ──────
+    # Absolute path to a dedicated logo image under LOGOS_PATH, or NULL.
+    # Ignored when logo_use_bug_image is true (see below).
+    logo_image_path = Column(String(500), nullable=True)
+
+    # When true, the channel logo IS the on-screen graphic image
+    # (bug_image_path) — one upload serves both purposes instead of two.
+    # logo_image_path is left on disk untouched while this is true, so
+    # turning it back off restores whatever dedicated logo was there before.
+    logo_use_bug_image = Column(Boolean, nullable=False, default=False)
 
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
